@@ -161,3 +161,34 @@ a.btn{text-decoration:none}
   .rep-sec{break-inside:auto}.rep-sec h3{break-after:avoid}
   *{-webkit-print-color-adjust:exact;print-color-adjust:exact}
 }
+
+/* منحنى التقدم */
+.sc-legend{display:flex;gap:16px;flex-wrap:wrap;font-size:10px;color:#4d6571;margin:-4px 0 8px}
+.sc-legend span,.sc-tip span{display:inline-flex;align-items:center;gap:6px}
+.sc-legend i,.sc-tip i{display:inline-block;width:18px;height:3px;border-radius:2px}
+.sc-legend i.dash,.sc-tip i.dash{height:0;border-top:2px dashed;background:none!important}
+.sc-wrap{position:relative}
+.sc-svg{width:100%;height:auto;display:block;overflow:visible}
+.sc-grid{stroke:#e9eff0;stroke-width:1}.sc-ax{font:500 10px Alexandria,Tahoma,sans-serif;fill:#8fa0a8}
+.sc-today{stroke:#9aabb3;stroke-width:1;stroke-dasharray:3 4}
+.sc-cross{stroke:#9aabb3;stroke-width:1}
+.sc-hit{cursor:crosshair}
+.sc-tip{position:absolute;top:-6px;transform:translateY(-100%);display:grid;gap:3px;background:#fff;border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:10px;color:var(--ink);box-shadow:0 8px 20px #08263d1a;pointer-events:none;white-space:nowrap;z-index:2}
+.st-plan{font-size:10px;color:#8a6c16;background:#fbf5e3;border-radius:999px;padding:3px 8px;white-space:nowrap}
+
+/* بيانات تجريبية */
+.demo-banner{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#fbf5e3;border:1px solid #efd99a;color:#6b5210;border-radius:10px;padding:10px 14px;margin-bottom:18px;font-size:11px}
+.demo-banner b{background:#d4a72c;color:var(--navy);border-radius:999px;padding:2px 9px;font-size:10px}
+.demo-banner a{color:#8a6c16;font-weight:700;margin-inline-start:auto}
+.chk-row{display:flex;align-items:center;gap:8px;font-size:11px;cursor:pointer}.chk-row input{accent-color:var(--gold);width:16px;height:16px}
+
+/* العرض المضغوط */
+html.dense .table th{padding-bottom:7px}
+html.dense .table td{padding:6px 7px;font-size:10px}
+html.dense .table td .sub{margin-top:1px}
+html.dense .panel{padding:14px}
+html.dense .stat{padding:12px}.dense .stat strong{margin-top:8px;font-size:21px}
+html.dense .st-card{padding:9px 12px}.dense .st-block{margin-top:6px}
+html.dense .stats,html.dense .grid{gap:12px}
+@media(max-width:700px){html.dense .table.cards tbody tr{padding:8px 2px;gap:6px 10px}}
+.muted{color:var(--muted);font-weight:500;font-size:10px}

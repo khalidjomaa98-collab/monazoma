@@ -57,13 +57,16 @@
   // الجدول الزمني: نسبة الوقت المنقضي من (البدء → الانتهاء المخطط) مقارنة بنسبة الإنجاز الفعلية
   // الانحراف = الإنجاز − الوقت المنقضي (بالنقاط). سالب = متأخر عن الجدول.
   const SCHED_WARN = 10; // تأخر أكبر من كده = «متأخر عن الجدول»
+  // لو آخر موقف فيه «نسبة الإنجاز المخططة» بنقارن بيها (أدق)، وإلا بالوقت المنقضي (توزيع خطي)
   function schedule(p) {
-    if (!p.start_date || !p.planned_end_date || p.status === "completed" || p.status === "planned") return null;
-    const s = new Date(p.start_date + "T00:00:00"), e = new Date(p.planned_end_date + "T00:00:00");
-    if (!(e > s)) return null;
-    const elapsed = Math.max(0, Math.min(100, (Date.now() - s) / (e - s) * 100));
-    const variance = Number(p.progress) - elapsed;
-    return { elapsed, variance, late: variance <= -SCHED_WARN, overdue: Date.now() > e && Number(p.progress) < 100 };
+    if (p.status === "completed" || p.status === "planned") return null;
+    const s = p.start_date && new Date(p.start_date + "T00:00:00"), e = p.planned_end_date && new Date(p.planned_end_date + "T00:00:00");
+    const elapsed = s && e && e > s ? Math.max(0, Math.min(100, (Date.now() - s) / (e - s) * 100)) : null;
+    const hasPlan = p.latest_planned != null;
+    if (!hasPlan && elapsed == null) return null;
+    const target = hasPlan ? Number(p.latest_planned) : elapsed;
+    const variance = Number(p.progress) - target;
+    return { elapsed, target, basis: hasPlan ? "plan" : "time", variance, late: variance <= -SCHED_WARN, overdue: !!e && Date.now() > e && Number(p.progress) < 100 };
   }
   const schedPill = sc => !sc ? "—"
     : sc.overdue ? `<span class="pill red">تجاوز موعد الانتهاء</span>`
@@ -175,11 +178,19 @@
     f.name === "status" ? { ...f, options: opts(STATUS, data.status || "planned") } :
     f.name === "kind" ? { ...f, options: opts(KIND, data.kind || "contractor") } : f);
 
-  function projectForm(p = {}, after) {
+  async function projectForm(p = {}, after) {
+    let users = [];
+    try { users = await q(sb.from("profiles").select("id,name,username").eq("active", true).order("name")); } catch { /* الاختيار اختياري */ }
+    const ownerField = { name: "owner_id", label: "مسؤول المتابعة", type: "select", wide: true,
+      options: `<option value="">بدون</option>` + users.map(u => `<option value="${u.id}"${u.id === (p.id ? p.owner_id : ctx.profile.id) ? " selected" : ""}>${esc(u.name || u.username)}</option>`).join(""),
+      hint: "الشخص المسؤول عن تحديث مواقف ومستخلصات المشروع." };
+    const fields = withOptions(PROJECT_FIELDS, p);
+    fields.splice(3, 0, ownerField);
     openForm({
-      title: p.id ? "تعديل بيانات المشروع" : "إضافة مشروع", fields: withOptions(PROJECT_FIELDS, p), data: p,
+      title: p.id ? "تعديل بيانات المشروع" : "إضافة مشروع", fields, data: p,
       submitLabel: p.id ? "حفظ التعديلات" : "إضافة المشروع",
       onSubmit: async v => {
+        v.owner_id = v.owner_id || null;
         const row = await q(p.id ? sb.from("projects").update(v).eq("id", p.id).select().single() : sb.from("projects").insert(v).select().single());
         toast(p.id ? "تم حفظ التعديلات." : "تمت إضافة المشروع."); after ? after(row) : route();
       },
@@ -338,7 +349,7 @@
     let projects = [], links = [];
     try {
       [projects, links] = await Promise.all([
-        s ? [] : fetchAll(() => sb.from("projects").select("id,code,name,progress").order("code")),
+        s ? [] : fetchAll(() => sb.from("projects").select("id,code,name,progress,start_date,planned_end_date").order("code")),
         fetchAll(() => sb.from("project_companies").select("project_id,company_id,companies(name)").order("project_id").order("company_id")),
       ]);
     } catch (err) { toast(errText(err), true); return; }
@@ -353,6 +364,7 @@
       { name: "report_date", label: "تاريخ الموقف", type: "date", required: true },
       { name: "condition", label: "الوضع", type: "select", options: opts(COND, s?.condition || "on_track") },
       { name: "progress", label: "نسبة الإنجاز الفعلية ٪", type: "number", required: true, min: 0, max: 100, step: "0.01", hint: "تُحدِّث نسبة إنجاز المشروع تلقائيًا." },
+      { name: "planned_progress", label: "نسبة الإنجاز المخططة ٪", type: "number", min: 0, max: 100, step: "0.01", hint: "حسب البرنامج الزمني في نفس التاريخ (اختياري — يُقارن بها الفعلي)." },
       { name: "work_done", label: "الأعمال المنفذة", type: "textarea", wide: true, maxlength: 3000 },
       { name: "next_steps", label: "الأعمال المخططة للفترة القادمة", type: "textarea", wide: true, maxlength: 3000 },
       { name: "obstacles", label: "العوائق والمشكلات", type: "textarea", wide: true, maxlength: 3000, hint: "مطلوبة إذا كان الوضع متأخرًا أو متوقفًا." },
@@ -377,8 +389,10 @@
       if (s?.company_id) el("company_id").value = s.company_id;
       // نسبة الإنجاز تبدأ من نسبة المشروع الحالية
       if (!s && !el("progress").dataset.touched) { const p = projects.find(x => x.id === pid); el("progress").value = p ? Number(p.progress) : ""; }
+      if (!s && !el("planned_progress").dataset.touched) { const p = projects.find(x => x.id === pid); const sc = p && schedule({ ...p, status: "active", latest_planned: null }); el("planned_progress").value = sc?.elapsed != null ? Math.round(sc.elapsed) : ""; }
     };
     el("progress").addEventListener("input", () => el("progress").dataset.touched = "1");
+    el("planned_progress").addEventListener("input", () => el("planned_progress").dataset.touched = "1");
     const cond = () => { el("obstacles").required = el("condition").value !== "on_track"; };
     el("condition").addEventListener("change", cond); cond();
     if (!s) el("project_id").onchange = fillCompanies;
@@ -393,11 +407,77 @@
         <header>
           <div class="st-title">${project ? `<a class="company" href="#/projects/${r.project_id}"><span class="mono">${esc(r.project_code)}</span> ${esc(r.project_name)}</a>` : ""}
             <span class="sub">${date(r.report_date)}${r.company_name ? `، ${esc(r.company_name)}` : ""}</span></div>
-          <div class="st-meta">${condPill(r.condition)}${progress(r.progress)}${ctx.canEdit && !compact ? `<button class="icon-btn" data-action="edit-status" data-id="${r.id}" aria-label="تعديل الموقف">${svg(ICON.edit)}</button>` : ""}</div>
+          <div class="st-meta">${condPill(r.condition)}${progress(r.progress)}${r.planned_progress != null ? `<span class="st-plan" title="المخطط">المخطط ${nf.format(Number(r.planned_progress))}٪</span>` : ""}${ctx.canEdit && !compact ? `<button class="icon-btn" data-action="edit-status" data-id="${r.id}" aria-label="تعديل الموقف">${svg(ICON.edit)}</button>` : ""}</div>
         </header>
         ${compact ? block("العوائق", r.obstacles, "obst") :
           block("الأعمال المنفذة", r.work_done) + block("المخطط للفترة القادمة", r.next_steps) + block("العوائق", r.obstacles, "obst") + block("ملاحظات", r.notes)}
       </article>`).join("")}</div>`;
+  }
+
+
+  /* ---------- منحنى التقدم (S-curve): الفعلي مقابل المخطط ---------- */
+  // محور واحد (٠–١٠٠٪) والزمن من الشمال لليمين (الرسوم البيانية ما بتتقلبش في الواجهات العربي).
+  // الألوان متحقق منها لعمى الألوان: الفعلي أزرق متصل، المخطط ذهبي متقطع.
+  const C_ACT = "#0a6fa8", C_PLAN = "#b8860b";
+  function sCurve(p, reps) {
+    const T = d => new Date(d + "T00:00:00").getTime();
+    const pts = reps.slice().sort((a, b) => T(a.report_date) - T(b.report_date));
+    const start = p.start_date ? T(p.start_date) : pts.length ? T(pts[0].report_date) : null;
+    const endPlan = p.planned_end_date ? T(p.planned_end_date) : null;
+    if (start == null || (!pts.length && !endPlan)) return null;
+    const hasPlan = pts.some(r => r.planned_progress != null);
+    const xs = [start, endPlan, Date.now(), ...pts.map(r => T(r.report_date))].filter(v => v != null);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs) + 1;
+    const W = 720, H = 250, L = 40, R = 14, TOP = 12, B = 28;
+    const X = v => L + (v - x0) / (x1 - x0) * (W - L - R), Y = v => TOP + (1 - v / 100) * (H - TOP - B);
+    const actual = [{ t: start, v: 0 }, ...pts.map(r => ({ t: T(r.report_date), v: Number(r.progress), r }))];
+    const planned = hasPlan ? [{ t: start, v: 0 }, ...pts.filter(r => r.planned_progress != null).map(r => ({ t: T(r.report_date), v: Number(r.planned_progress) }))]
+      : endPlan ? [{ t: start, v: 0 }, { t: endPlan, v: 100 }] : [];
+    const path = arr => arr.map((d, i) => `${i ? "L" : "M"}${X(d.t).toFixed(1)},${Y(d.v).toFixed(1)}`).join("");
+    const grid = [0, 25, 50, 75, 100].map(v => `<line x1="${L}" x2="${W - R}" y1="${Y(v)}" y2="${Y(v)}" class="sc-grid"/><text x="${L - 6}" y="${Y(v) + 3.5}" class="sc-ax" text-anchor="end">${nf.format(v)}٪</text>`).join("");
+    const months = Math.max(1, Math.round((x1 - x0) / 2.6e9)), step = Math.max(1, Math.ceil(months / 6));
+    const ticks = []; { const d = new Date(x0); d.setDate(1); d.setMonth(d.getMonth() + 1);
+      for (let i = 0; d.getTime() < x1; i++, d.setMonth(d.getMonth() + 1)) if (i % step === 0) ticks.push(d.getTime()); }
+    const xt = ticks.map(v => `<text x="${X(v)}" y="${H - 8}" class="sc-ax" text-anchor="middle">${new Date(v).toLocaleDateString("ar-EG", { month: "short", year: "2-digit" })}</text>`).join("");
+    const today = Date.now() <= x1 ? `<line x1="${X(Date.now())}" x2="${X(Date.now())}" y1="${TOP}" y2="${H - B}" class="sc-today"/><text x="${X(Date.now()) - 4}" y="${H - B - 6}" class="sc-ax" text-anchor="end">اليوم</text>` : "";
+    const last = actual[actual.length - 1];
+    const svg = `<svg viewBox="0 0 ${W} ${H}" class="sc-svg" role="img" aria-label="منحنى التقدم: الإنجاز الفعلي ${nf.format(last.v)}٪ مقابل المخطط">
+      ${grid}${xt}${today}
+      ${planned.length ? `<path d="${path(planned)}" fill="none" stroke="${C_PLAN}" stroke-width="2" stroke-dasharray="6 5" stroke-linejoin="round"/>` : ""}
+      <path d="${path(actual)}" fill="none" stroke="${C_ACT}" stroke-width="2" stroke-linejoin="round"/>
+      ${pts.length ? `<circle cx="${X(last.t)}" cy="${Y(last.v)}" r="4.5" fill="${C_ACT}" stroke="#fff" stroke-width="2"/>` : ""}
+      <g class="sc-hover" visibility="hidden"><line class="sc-cross" y1="${TOP}" y2="${H - B}"/><circle class="sc-dot-a" r="4.5" fill="${C_ACT}" stroke="#fff" stroke-width="2"/><circle class="sc-dot-p" r="4.5" fill="${C_PLAN}" stroke="#fff" stroke-width="2"/></g>
+      <rect class="sc-hit" x="${L}" y="${TOP}" width="${W - L - R}" height="${H - TOP - B}" fill="transparent"/>
+    </svg>`;
+    const planAt = tt => { // قيمة المخطط عند أي تاريخ (استيفاء خطي بين النقط)
+      if (!planned.length) return null;
+      for (let i = 1; i < planned.length; i++) if (tt <= planned[i].t) { const a = planned[i - 1], b = planned[i]; return a.v + (b.v - a.v) * (tt - a.t) / (b.t - a.t || 1); }
+      return planned[planned.length - 1].v;
+    };
+    return { html: `<div class="sc-legend"><span><i style="background:${C_ACT}"></i>الإنجاز الفعلي</span><span><i class="dash" style="border-color:${C_PLAN}"></i>${hasPlan ? "المخطط (من المواقف)" : "المخطط (توزيع خطي على المدة)"}</span></div>
+        <div class="sc-wrap" dir="ltr">${svg}<div class="sc-tip" dir="rtl" hidden></div></div>`,
+      bind(root) {
+        const svgEl = $(".sc-svg", root), tip = $(".sc-tip", root), g = $(".sc-hover", root);
+        if (!svgEl || pts.length === 0) return;
+        const move = ev => {
+          const r = svgEl.getBoundingClientRect(), px = ((ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left) / r.width * W;
+          const tt = x0 + (px - L) / (W - L - R) * (x1 - x0);
+          let best = actual[1], bd = Infinity;
+          actual.slice(1).forEach(d => { const dd = Math.abs(d.t - tt); if (dd < bd) { bd = dd; best = d; } });
+          const pv = best.r.planned_progress != null ? Number(best.r.planned_progress) : planAt(best.t);
+          g.setAttribute("visibility", "visible");
+          $(".sc-cross", g).setAttribute("x1", X(best.t)); $(".sc-cross", g).setAttribute("x2", X(best.t));
+          $(".sc-dot-a", g).setAttribute("cx", X(best.t)); $(".sc-dot-a", g).setAttribute("cy", Y(best.v));
+          const dp = $(".sc-dot-p", g); if (pv != null) { dp.setAttribute("cx", X(best.t)); dp.setAttribute("cy", Y(pv)); dp.style.display = ""; } else dp.style.display = "none";
+          tip.hidden = false;
+          tip.innerHTML = `<b>${date(best.r.report_date)}</b><span><i style="background:${C_ACT}"></i>الفعلي ${nf.format(best.v)}٪</span>${pv != null ? `<span><i class="dash" style="border-color:${C_PLAN}"></i>المخطط ${nf.format(Math.round(pv * 10) / 10)}٪</span>` : ""}${best.r.condition ? `<span>${esc(COND[best.r.condition][0])}</span>` : ""}`;
+          const left = X(best.t) / W * r.width;
+          tip.style.left = Math.min(Math.max(left - tip.offsetWidth / 2, 0), r.width - tip.offsetWidth) + "px";
+        };
+        const hit = $(".sc-hit", root);
+        hit.addEventListener("mousemove", move); hit.addEventListener("touchstart", move, { passive: true }); hit.addEventListener("touchmove", move, { passive: true });
+        hit.addEventListener("mouseleave", () => { g.setAttribute("visibility", "hidden"); tip.hidden = true; });
+      } };
   }
 
   /* ---------- الشاشات ---------- */
@@ -418,6 +498,7 @@
         q(sb.from("project_statuses_overview").select("*").order("report_date", { ascending: false }).order("created_at", { ascending: false }).limit(4)),
       ]);
       if (my !== seq) return;
+      demoBanner();
       $('[data-stat="extracts"]', view).textContent = nf.format(openN);
       $('[data-stat-note="extracts"]', view).textContent = openN ? `${nf.format(openN - needs)} بانتظار المراجعة، ${nf.format(needs)} مطلوب استكمال` : "لا توجد مستخلصات تحت المتابعة";
       // المشروعات اللي محتاجة انتباه (كل مشروع يتعد مرة واحدة)
@@ -444,6 +525,16 @@
     } catch (e) { if (my === seq) toast(errText(e), true); }
   }
 
+  async function demoBanner() {
+    try {
+      const n = await q(sb.from("projects").select("id", { count: "exact", head: true }).eq("demo", true));
+      if (!n || $(".demo-banner", view)) return;
+      const b = document.createElement("div"); b.className = "demo-banner";
+      b.innerHTML = `<b>بيانات تجريبية</b><span>المنظومة تعرض الآن ${nf.format(n)} مشروعات تجريبية للعرض.</span>${ctx.isAdmin ? `<a href="#/settings">إدارتها من الإعدادات</a>` : ""}`;
+      view.prepend(b);
+    } catch { /* اختياري */ }
+  }
+
   async function projectsList() {
     const my = seq;
     crumb.innerHTML = `<a href="#/">الرئيسية</a> / المشروعات`;
@@ -451,26 +542,29 @@
     let rows;
     try { rows = await fetchAll(() => sb.from("projects_overview").select("*").order("code")); } catch (e) { return my === seq && failed(e); }
     if (my !== seq) return;
-    const f = projectsList.f ||= { text: "", status: "" };
+    const f = projectsList.f ||= { text: "", status: "", owner: "" };
+    const owners = [...new Map(rows.filter(r => r.owner_id).map(r => [r.owner_id, r.owner_name])).entries()].sort((a, b) => (a[1] || "").localeCompare(b[1] || "", "ar"));
     view.innerHTML = head("المشروعات", `مشروعات الطرق المسجلة وحالتها ونسبة الإنجاز.`, editBtn("add-project", "إضافة مشروع")) +
       `<section class="panel">
         <div class="filters">
           <label class="search">${svg(ICON.search)}<input type="search" id="q" placeholder="بحث برقم المشروع أو الاسم أو الموقع" value="${esc(f.text)}" /></label>
           <select id="st" aria-label="الحالة"><option value="">كل الحالات</option>${opts(STATUS, f.status)}</select>
+          <select id="ow" aria-label="مسؤول المتابعة"><option value="">كل المسؤولين</option><option value="me"${f.owner === "me" ? " selected" : ""}>مشروعاتي</option><option value="none"${f.owner === "none" ? " selected" : ""}>بدون مسؤول</option>${owners.map(([id, n]) => `<option value="${id}"${f.owner === id ? " selected" : ""}>${esc(n)}</option>`).join("")}</select>
           <span class="count" id="cnt"></span>
         </div>
         <div id="list"></div>
       </section>`;
     const draw = () => {
       const t = f.text.trim().toLowerCase();
-      const list = rows.filter(r => (!f.status || r.status === f.status) && (!t || [r.code, r.name, r.location].some(x => (x || "").toLowerCase().includes(t))));
+      const okOwner = r => !f.owner || (f.owner === "me" ? r.owner_id === ctx.profile.id : f.owner === "none" ? !r.owner_id : r.owner_id === f.owner);
+      const list = rows.filter(r => (!f.status || r.status === f.status) && okOwner(r) && (!t || [r.code, r.name, r.location].some(x => (x || "").toLowerCase().includes(t))));
       $("#cnt").textContent = rows.length ? `${nf.format(list.length)} من ${nf.format(rows.length)}` : "";
       $("#list").innerHTML = !rows.length ? empty("proj", "لا توجد مشروعات مسجلة", ctx.canEdit ? "ابدأ بإضافة أول مشروع من زر «إضافة مشروع»." : "ستظهر المشروعات هنا بعد أن يضيفها المسؤول عن الإدخال.")
         : !list.length ? empty("search", "لا توجد نتائج", "غيّر كلمات البحث أو الحالة المختارة.")
         : `<table class="table cards"><thead><tr><th>رقم المشروع</th><th>المشروع</th><th>الحالة</th><th>الإنجاز</th><th>الجدول الزمني</th><th>الشركات</th><th>الانتهاء المخطط</th></tr></thead><tbody>${list.map(r => `
           <tr class="row-link" data-href="#/projects/${r.id}" tabindex="0">
             <td data-label="رقم المشروع" class="mono">${esc(r.code)}</td>
-            <td data-label="المشروع" class="title"><span class="company">${esc(r.name)}</span>${r.location ? `<span class="sub">${esc(r.location)}</span>` : ""}</td>
+            <td data-label="المشروع" class="title"><span class="company">${esc(r.name)}</span><span class="sub">${[r.location, r.owner_name && `المسؤول: ${r.owner_name}`].filter(Boolean).map(esc).join("، ")}</span></td>
             <td data-label="الحالة">${pill(r.status)}</td>
             <td data-label="الإنجاز">${progress(r.progress)}</td>
             <td data-label="الجدول الزمني">${schedPill(schedule(r))}</td>
@@ -480,6 +574,7 @@
     };
     $("#q").oninput = e => { f.text = e.target.value; draw(); };
     $("#st").onchange = e => { f.status = e.target.value; draw(); };
+    $("#ow").onchange = e => { f.owner = e.target.value; draw(); };
     draw();
   }
 
@@ -490,10 +585,10 @@
     let p, links, exts, reps;
     try {
       [p, links, exts, reps] = await Promise.all([
-        q(sb.from("projects").select("*").eq("id", id).maybeSingle()),
+        q(sb.from("projects_overview").select("*").eq("id", id).maybeSingle()),
         q(sb.from("project_companies").select("*, companies(id,name,kind)").eq("project_id", id)),
         fetchAll(() => sb.from("extracts_overview").select("*").eq("project_id", id).order("submitted_on", { ascending: false }).order("number", { ascending: false }).order("id")),
-        q(sb.from("project_statuses_overview").select("*").eq("project_id", id).order("report_date", { ascending: false }).order("created_at", { ascending: false }).limit(4)),
+        fetchAll(() => sb.from("project_statuses_overview").select("*").eq("project_id", id).order("report_date", { ascending: false }).order("created_at", { ascending: false }).order("id")),
       ]);
     } catch (e) { return my === seq && failed(e); }
     if (my !== seq) return;
@@ -504,17 +599,20 @@
     const approvedBy = {}; // صافي المستخلصات المعتمدة والمصروفة لكل شركة
     exts.filter(x => x.status === "approved" || x.status === "paid").forEach(x => approvedBy[x.company_id] = (approvedBy[x.company_id] || 0) + Number(x.net_amount));
     const approvedAll = Object.values(approvedBy).reduce((s, v) => s + v, 0);
+    const curve = sCurve(p, reps);
     view.innerHTML = head(p.name, `<span class="mono">${esc(p.code)}</span>${p.location ? `، ${esc(p.location)}` : ""}`, `<a class="btn ghost" href="#/reports" data-action="project-report">تقرير المشروع</a>` + editBtn("edit-project", "تعديل البيانات", "edit", "btn ghost")) +
       `<section class="info panel">
         <div><span>الحالة</span>${pill(p.status)}</div>
         <div><span>نسبة الإنجاز</span>${progress(p.progress)}</div>
-        ${(sc => sc ? `<div><span>الوقت المنقضي من المدة</span>${progress(Math.round(sc.elapsed))}</div><div><span>الجدول الزمني</span>${schedPill(sc)}</div>` : "")(schedule(p))}
+        ${(sc => sc ? `${sc.basis === "plan" ? `<div><span>المخطط حسب آخر موقف</span>${progress(Math.round(sc.target))}</div>` : sc.elapsed != null ? `<div><span>الوقت المنقضي من المدة</span>${progress(Math.round(sc.elapsed))}</div>` : ""}<div><span>الجدول الزمني</span>${schedPill(sc)}</div>` : "")(schedule(p))}
+        <div><span>مسؤول المتابعة</span><b>${esc(p.owner_name) || "—"}</b></div>
         <div><span>قيمة التعاقد</span><b>${money(p.contract_value)}</b></div>
         <div><span>تاريخ البدء</span><b>${date(p.start_date)}</b></div>
         <div><span>الانتهاء المخطط</span><b>${date(p.planned_end_date)}</b></div>
         <div><span>عدد الشركات</span><b>${nf.format(links.length)}</b></div>
         ${p.notes ? `<div class="wide"><span>ملاحظات</span><p>${esc(p.notes)}</p></div>` : ""}
       </section>
+      ${curve ? `<section class="panel"><div class="panel-head"><h2>منحنى التقدم</h2></div>${curve.html}</section>` : ""}
       <section class="panel">
         <div class="panel-head"><h2>المواقف التنفيذية</h2><div class="head-actions">${reps.length > 3 ? `<a class="btn ghost sm" href="#/statuses" data-action="all-statuses">كل المواقف</a>` : ""}${editBtn("add-status-here", "تسجيل موقف", "plus", "btn ghost sm")}</div></div>
         ${reps.length ? statusCards(reps.slice(0, 3), { project: false }) : empty("stat", "لا توجد مواقف تنفيذية", ctx.canEdit ? "سجّل موقف المشروع من زر «تسجيل موقف»." : "لم يُسجَّل موقف لهذا المشروع بعد.")}
@@ -533,9 +631,10 @@
           </tr>`).join("")}</tbody>${links.length > 1 ? `<tfoot><tr><td colspan="3">الإجمالي</td><td class="num">${money(total)}</td><td class="num">${approvedAll ? money(approvedAll) : "—"}</td>${ctx.canEdit ? "<td></td>" : ""}</tr></tfoot>` : ""}</table>`}
       </section>
       <section class="panel">
-        <div class="panel-head"><h2>مستخلصات المشروع</h2>${links.length ? editBtn("add-extract-here", "تسجيل مستخلص", "plus", "btn ghost sm") : ""}</div>
-        ${exts.length ? extractsTable(exts, { project: false }) : empty("ext", "لا توجد مستخلصات", links.length ? (ctx.canEdit ? "سجّل مستخلصات الشركات من زر «تسجيل مستخلص»." : "لم تُسجَّل مستخلصات لهذا المشروع بعد.") : "اربط الشركات بالمشروع أولًا، ثم سجّل مستخلصاتها.")}
+        <div class="panel-head"><h2>مستخلصات المشروع${exts.length > 10 ? ` <small class="muted">(آخر ١٠ من ${nf.format(exts.length)})</small>` : ""}</h2><div class="head-actions">${exts.length > 10 ? `<a class="btn ghost sm" href="#/extracts" data-action="project-extracts">كل المستخلصات</a>` : ""}${links.length ? editBtn("add-extract-here", "تسجيل مستخلص", "plus", "btn ghost sm") : ""}</div></div>
+        ${exts.length ? extractsTable(exts.slice(0, 10), { project: false, total: exts.length <= 10 }) : empty("ext", "لا توجد مستخلصات", links.length ? (ctx.canEdit ? "سجّل مستخلصات الشركات من زر «تسجيل مستخلص»." : "لم تُسجَّل مستخلصات لهذا المشروع بعد.") : "اربط الشركات بالمشروع أولًا، ثم سجّل مستخلصاتها.")}
       </section>`;
+    if (curve) curve.bind(view);
     Object.assign(actions, {
       "edit-project": () => projectForm(p),
       "link-company": async () => {
@@ -550,6 +649,7 @@
       "edit-link": el => linkForm(id, links[+el.dataset.i]),
       "add-extract-here": () => extractForm(null, { project_id: id }),
       "add-status-here": () => reportForm(null, { project_id: id }),
+      "project-extracts": () => { Object.assign(extractsList.f ||= { text: "", status: "open", project: "" }, { project: id, status: "" }); location.hash = "#/extracts"; },
       "project-report": () => { Object.assign(reportsPage.f ||= { status: "", estatus: "", from: "", to: "", mode: "latest", attention: false }, { type: "project", project: id }); location.hash = "#/reports"; },
       "edit-status": el => reportForm(reps.find(r => r.id === el.dataset.id)),
       "all-statuses": () => { (statusesPage.f ||= { show: "", project: "", cond: "" }).project = id; location.hash = "#/statuses"; },
@@ -1024,6 +1124,12 @@
     });
   }
 
+  /* ---------- العرض المضغوط (إعداد لكل جهاز) ---------- */
+  const DENSE_KEY = "monazoma-dense";
+  const isDense = () => { try { return localStorage.getItem(DENSE_KEY) === "1"; } catch { return false; } };
+  const setDense = on => { document.documentElement.classList.toggle("dense", on); try { on ? localStorage.setItem(DENSE_KEY, "1") : localStorage.removeItem(DENSE_KEY); } catch { /* اختياري */ } };
+  setDense(isDense());
+
   /* ---------- الإعدادات: حسابي + إدارة المستخدمين ---------- */
   const ROLE = { admin: ["مدير المنظومة", "blue"], editor: ["إدخال وتعديل", "amber"], viewer: ["اطلاع فقط", "gray"] };
   const ROLE_HINT = "المدير: كل شيء + إدارة المستخدمين والحذف. إدخال وتعديل: الإضافة والتعديل وتغيير حالات المستخلصات. اطلاع فقط: مشاهدة بدون تعديل.";
@@ -1128,9 +1234,14 @@
     const my = seq;
     crumb.innerHTML = `<a href="#/">الرئيسية</a> / الإعدادات`;
     loading();
-    let users = [];
+    let users = [], demoCount = 0;
     if (ctx.isAdmin) {
-      try { users = await q(sb.from("profiles").select("id,name,username,role,active,created_at").order("active", { ascending: false }).order("name")); }
+      try {
+        [users, demoCount] = await Promise.all([
+          q(sb.from("profiles").select("id,name,username,role,active,created_at").order("active", { ascending: false }).order("name")),
+          q(sb.from("projects").select("id", { count: "exact", head: true }).eq("demo", true)),
+        ]);
+      }
       catch (e) { return my === seq && failed(e); }
     }
     if (my !== seq) return;
@@ -1155,8 +1266,20 @@
             <td class="act"><button class="icon-btn" data-action="edit-user" data-i="${i}" aria-label="تعديل المستخدم">${svg(ICON.edit)}</button></td>
           </tr>`).join("")}</tbody></table>
         <p class="note">يدخل المستخدم باسم المستخدم وكلمة المرور التي تحددها له، ويستطيع تغيير كلمة المرور بنفسه من صفحة الإعدادات. الحساب الموقوف لا يستطيع الدخول، ويبقى اسمه في سجل المتابعة.</p>
-      </section>` : ""}`;
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>البيانات التجريبية</h2></div>
+        <p class="note" style="margin-top:0">${demoCount ? `المنظومة فيها الآن <b>${nf.format(demoCount)}</b> مشروعات تجريبية (أكوادها تبدأ بـ «تج-») مع شركاتها ومستخلصاتها ومواقفها. امسحها قبل إدخال البيانات الحقيقية — المسح لا يلمس أي بيانات أخرى.` : "تحميل ٨ مشروعات تجريبية بحالات مختلفة مع شركات ومستخلصات ومواقف تنفيذية، للعرض والتجربة. يمكن مسحها كلها بضغطة."}</p>
+        <div class="step-btns">${demoCount ? `<button class="btn danger" data-action="demo-clear">مسح البيانات التجريبية</button>` : `<button class="btn primary" data-action="demo-load">تحميل البيانات التجريبية</button>`}</div>
+      </section>` : ""}
+      <section class="panel">
+        <div class="panel-head"><h2>طريقة العرض</h2></div>
+        <label class="chk-row"><input type="checkbox" id="dense"${isDense() ? " checked" : ""} /> عرض مضغوط للجداول (صفوف أكثر في الشاشة)</label>
+      </section>`;
+    $("#dense").onchange = e => setDense(e.target.checked);
     Object.assign(actions, {
+      "demo-load": async el => { el.disabled = true; el.textContent = "جارٍ التحميل…"; try { await q(sb.rpc("load_demo_data")); toast("تم تحميل البيانات التجريبية."); location.hash = "#/"; } catch (e) { toast(errText(e), true); el.disabled = false; } },
+      "demo-clear": async el => { if (!confirm("مسح كل البيانات التجريبية (المشروعات «تج-» وشركاتها ومستخلصاتها ومواقفها)؟")) return; el.disabled = true; el.textContent = "جارٍ المسح…"; try { await q(sb.rpc("clear_demo_data")); toast("تم مسح البيانات التجريبية."); route(); } catch (e) { toast(errText(e), true); el.disabled = false; } },
       "my-password": myPasswordForm,
       "add-user": addUserForm,
       "edit-user": el => editUserForm(users[+el.dataset.i]),
