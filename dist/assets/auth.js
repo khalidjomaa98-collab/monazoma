@@ -22,7 +22,7 @@
   const toEmail = u => (u.includes("@") ? u : `${u}@${USER_DOMAIN}`).toLowerCase();
 
   async function loadProfile(userId) {
-    const { data, error } = await sb.from("profiles").select("id,name,role,active").eq("id", userId).maybeSingle();
+    const { data, error } = await sb.from("profiles").select("id,name,username,role,active").eq("id", userId).maybeSingle();
     if (error) throw error;
     return data;
   }
@@ -62,7 +62,7 @@
         location.replace("dashboard.html");
       } catch (err) {
         msg.textContent =
-          err.code === "inactive" ? "هذا الحساب موقوف. تواصل مع مدير المنظومة." :
+          err.code === "inactive" || err.code === "user_banned" ? "هذا الحساب موقوف. تواصل مع مدير المنظومة." :
           err.code === "invalid_credentials" || err.status === 400 ? "اسم المستخدم أو كلمة المرور غير صحيحة." :
           !navigator.onLine ? "لا يوجد اتصال بالإنترنت." :
           "تعذّر تسجيل الدخول، حاول مرة أخرى.";
