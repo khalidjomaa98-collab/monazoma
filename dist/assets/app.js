@@ -63,6 +63,8 @@
       : "لا يمكن الحذف: الشركة مرتبطة بمشروعات. احذف الارتباط أولًا.";
     if (e?.code === "23514") return m.includes("extracts") ? "تحقق من القيم: الاستقطاعات لا تزيد عن قيمة الأعمال، ونهاية الفترة بعد بدايتها."
       : "تحقق من القيم المدخلة (النسب بين 0 و100، وتاريخ الانتهاء بعد البدء).";
+    if (e?.userMsg) return e.userMsg;
+    if (e?.code === "P0001" && m.includes("مدير نشط")) return "يجب أن يبقى مدير نشط واحد على الأقل في المنظومة.";
     if (e?.code === "42501" || e?.code === "PGRST301") return "ليس لديك صلاحية لهذا الإجراء.";
     return "تعذّر تنفيذ العملية، حاول مرة أخرى.";
   }
@@ -77,7 +79,8 @@
   /* ---------- النوافذ (إضافة/تعديل) ---------- */
   function field(f, val) {
     const v = val ?? f.value ?? "";
-    const attrs = `id="f-${f.name}" name="${f.name}"${f.required ? " required" : ""}${f.min != null ? ` min="${f.min}"` : ""}${f.max != null ? ` max="${f.max}"` : ""}${f.step ? ` step="${f.step}"` : ""}${f.maxlength ? ` maxlength="${f.maxlength}"` : ""}`;
+    const auto = f.type === "password" ? (f.name === "current" ? "current-password" : "new-password") : (f.autocomplete || "");
+    const attrs = `id="f-${f.name}" name="${f.name}"${auto ? ` autocomplete="${auto}"` : ""}${f.required ? " required" : ""}${f.min != null ? ` min="${f.min}"` : ""}${f.max != null ? ` max="${f.max}"` : ""}${f.step ? ` step="${f.step}"` : ""}${f.maxlength ? ` maxlength="${f.maxlength}"` : ""}`;
     let input;
     if (f.type === "select") input = `<select ${attrs}>${f.options}</select>`;
     else if (f.type === "textarea") input = `<textarea ${attrs} rows="3">${esc(v)}</textarea>`;
@@ -106,7 +109,7 @@
       for (const f of fields) {
         let v = form.elements[f.name].value;
         if (f.type === "number" || f.type === "date") v = v === "" ? null : (f.type === "number" ? Number(v) : v);
-        else v = v.trim();
+        else if (f.type !== "password") v = v.trim();
         out[f.name] = v;
       }
       busy(true); submit.textContent = "جارٍ الحفظ…";
@@ -592,13 +595,152 @@
     });
   }
 
+  /* ---------- الإعدادات: حسابي + إدارة المستخدمين ---------- */
+  const ROLE = { admin: ["مدير المنظومة", "blue"], editor: ["إدخال وتعديل", "amber"], viewer: ["اطلاع فقط", "gray"] };
+  const ROLE_HINT = "المدير: كل شيء + إدارة المستخدمين والحذف. إدخال وتعديل: الإضافة والتعديل وتغيير حالات المستخلصات. اطلاع فقط: مشاهدة بدون تعديل.";
+  const MIN_PASSWORD = 8;
+  const USER_ERR = {
+    bad_username: "اسم المستخدم: حروف إنجليزية صغيرة وأرقام فقط، يبدأ بحرف، من ٣ إلى ٣٠ حرفًا (مسموح . _ -).",
+    bad_name: "اكتب الاسم الذي سيظهر في المنظومة.",
+    weak_password: `كلمة المرور يجب ألا تقل عن ${nf.format(MIN_PASSWORD)} أحرف.`,
+    username_taken: "اسم المستخدم هذا مستخدم بالفعل. اختر اسمًا آخر.",
+    cannot_disable_self: "لا يمكنك إيقاف حسابك أنت.",
+    last_admin: "يجب أن يبقى مدير نشط واحد على الأقل في المنظومة.",
+    forbidden: "هذا الإجراء للمدير فقط.",
+    unauthorized: "انتهت الجلسة. سجّل الدخول من جديد.",
+  };
+  async function adminCall(body) {
+    const { data, error } = await sb.functions.invoke("admin-users", { body });
+    if (!error) return data;
+    let code = "";
+    try { code = (await error.context.json()).error; } catch { /* رد غير متوقع */ }
+    throw Object.assign(new Error(code || "function_failed"), { userMsg: USER_ERR[code] || "تعذّر تنفيذ العملية، حاول مرة أخرى." });
+  }
+  const passwordFields = (withCurrent) => [
+    ...(withCurrent ? [{ name: "current", label: "كلمة المرور الحالية", type: "password", required: true, wide: true }] : []),
+    { name: "password", label: "كلمة المرور الجديدة", type: "password", required: true, wide: true, hint: `${nf.format(MIN_PASSWORD)} أحرف على الأقل.` },
+    { name: "confirm", label: "تأكيد كلمة المرور", type: "password", required: true, wide: true },
+  ];
+  const checkPasswords = v => {
+    if (v.password.length < MIN_PASSWORD) throw Object.assign(new Error(), { userMsg: USER_ERR.weak_password });
+    if (v.password !== v.confirm) throw Object.assign(new Error(), { userMsg: "كلمتا المرور غير متطابقتين." });
+  };
+
+  function myPasswordForm() {
+    openForm({
+      title: "تغيير كلمة المرور", fields: passwordFields(true), submitLabel: "تغيير كلمة المرور",
+      onSubmit: async v => {
+        checkPasswords(v);
+        const { data: { user } } = await sb.auth.getUser();
+        const { error: e1 } = await sb.auth.signInWithPassword({ email: user.email, password: v.current });
+        if (e1) throw Object.assign(new Error(), { userMsg: "كلمة المرور الحالية غير صحيحة." });
+        const { error: e2 } = await sb.auth.updateUser({ password: v.password });
+        if (e2) throw Object.assign(e2, { userMsg: /different|same/i.test(e2.message) ? "اختر كلمة مرور مختلفة عن الحالية." : /weak|short|least/i.test(e2.message) ? USER_ERR.weak_password : undefined });
+        toast("تم تغيير كلمة المرور.");
+      },
+    });
+  }
+
+  function addUserForm() {
+    openForm({
+      title: "إضافة مستخدم",
+      fields: [
+        { name: "name", label: "الاسم الظاهر", required: true, maxlength: 100, wide: true, hint: "مثال: م. أحمد علي — يظهر في القائمة وسجل المتابعة." },
+        { name: "username", label: "اسم المستخدم (للدخول)", required: true, maxlength: 30, autocomplete: "off", hint: "حروف إنجليزية صغيرة وأرقام، مثل ahmed أو eng.ali" },
+        { name: "role", label: "الصلاحية", type: "select", options: opts(ROLE, "viewer"), hint: ROLE_HINT },
+        ...passwordFields(false),
+      ],
+      submitLabel: "إنشاء الحساب",
+      onSubmit: async v => {
+        v.username = v.username.toLowerCase();
+        if (!/^[a-z][a-z0-9._-]{2,29}$/.test(v.username)) throw Object.assign(new Error(), { userMsg: USER_ERR.bad_username });
+        checkPasswords(v);
+        await adminCall({ action: "create", username: v.username, name: v.name, role: v.role, password: v.password });
+        toast(`تم إنشاء حساب «${v.name}». اسم الدخول: ${v.username}`); route();
+      },
+    });
+  }
+
+  function editUserForm(u) {
+    const self = u.id === ctx.profile.id;
+    const form = openForm({
+      title: `تعديل: ${u.name || u.username}`,
+      fields: [
+        { name: "name", label: "الاسم الظاهر", required: true, maxlength: 100, wide: true },
+        { name: "role", label: "الصلاحية", type: "select", options: opts(ROLE, u.role), wide: true, hint: ROLE_HINT },
+      ],
+      data: u, submitLabel: "حفظ",
+      onSubmit: async v => {
+        await q(sb.from("profiles").update(v).eq("id", u.id));
+        if (self && v.role !== u.role) { toast("تم تغيير صلاحيتك. سيُعاد تحميل الصفحة."); setTimeout(() => location.reload(), 1200); return; }
+        toast("تم حفظ التعديلات."); route();
+      },
+    });
+    // أزرار إضافية: كلمة مرور جديدة + إيقاف/تفعيل
+    const extra = document.createElement("div");
+    extra.className = "user-extra";
+    extra.innerHTML = `<button type="button" class="btn ghost sm" data-x="pw">تعيين كلمة مرور جديدة</button>` +
+      (self ? "" : `<button type="button" class="btn ${u.active ? "danger" : "ghost"} sm" data-x="active">${u.active ? "إيقاف الحساب" : "إعادة تفعيل الحساب"}</button>`);
+    $(".fields", form).after(extra);
+    $('[data-x="pw"]', extra).onclick = () => openForm({
+      title: `كلمة مرور جديدة: ${u.name || u.username}`, fields: passwordFields(false), submitLabel: "تعيين كلمة المرور",
+      onSubmit: async v => { checkPasswords(v); await adminCall({ action: "set_password", id: u.id, password: v.password }); toast("تم تعيين كلمة المرور الجديدة. أبلغ المستخدم بها."); route(); },
+    });
+    const act = $('[data-x="active"]', extra);
+    if (act) act.onclick = async () => {
+      if (u.active && !confirm(`إيقاف حساب «${u.name || u.username}»؟ لن يستطيع الدخول حتى تعيد تفعيله. بياناته وسجله يبقيان كما هما.`)) return;
+      act.disabled = true;
+      try { await adminCall({ action: "set_active", id: u.id, active: !u.active }); dlg.close(); toast(u.active ? "تم إيقاف الحساب." : "تم تفعيل الحساب."); route(); }
+      catch (e) { $(".form-err", form).textContent = errText(e); act.disabled = false; }
+    };
+  }
+
+  async function settings() {
+    const my = seq;
+    crumb.innerHTML = `<a href="#/">الرئيسية</a> / الإعدادات`;
+    loading();
+    let users = [];
+    if (ctx.isAdmin) {
+      try { users = await q(sb.from("profiles").select("id,name,username,role,active,created_at").order("active", { ascending: false }).order("name")); }
+      catch (e) { return my === seq && failed(e); }
+    }
+    if (my !== seq) return;
+    const me = ctx.profile;
+    view.innerHTML = head("الإعدادات", ctx.isAdmin ? "حسابك وإدارة مستخدمي المنظومة." : "بيانات حسابك.") +
+      `<section class="panel">
+        <div class="panel-head"><h2>حسابي</h2><button class="btn ghost sm" data-action="my-password">تغيير كلمة المرور</button></div>
+        <div class="info flat">
+          <div><span>الاسم</span><b>${esc(me.name) || "—"}</b></div>
+          <div><span>اسم المستخدم</span><b class="mono" dir="ltr">${esc(me.username)}</b></div>
+          <div><span>الصلاحية</span><span class="pill ${ROLE[me.role]?.[1]}">${esc(ROLE[me.role]?.[0])}</span></div>
+        </div>
+      </section>
+      ${ctx.isAdmin ? `<section class="panel">
+        <div class="panel-head"><h2>المستخدمون</h2><button class="btn primary sm" data-action="add-user">${svg(ICON.plus)}<span>إضافة مستخدم</span></button></div>
+        <table class="table cards"><thead><tr><th>الاسم</th><th>اسم المستخدم</th><th>الصلاحية</th><th>الحالة</th><th></th></tr></thead><tbody>${users.map((u, i) => `
+          <tr class="${u.active ? "" : "inactive"}">
+            <td data-label="الاسم" class="title"><span class="company">${esc(u.name) || "—"}</span>${u.id === me.id ? `<span class="sub">أنت</span>` : ""}</td>
+            <td data-label="اسم المستخدم" class="mono" dir="ltr">${esc(u.username)}</td>
+            <td data-label="الصلاحية"><span class="pill ${ROLE[u.role]?.[1]}">${esc(ROLE[u.role]?.[0])}</span></td>
+            <td data-label="الحالة">${u.active ? `<span class="pill green">نشط</span>` : `<span class="pill red">موقوف</span>`}</td>
+            <td class="act"><button class="icon-btn" data-action="edit-user" data-i="${i}" aria-label="تعديل المستخدم">${svg(ICON.edit)}</button></td>
+          </tr>`).join("")}</tbody></table>
+        <p class="note">يدخل المستخدم باسم المستخدم وكلمة المرور التي تحددها له، ويستطيع تغيير كلمة المرور بنفسه من صفحة الإعدادات. الحساب الموقوف لا يستطيع الدخول، ويبقى اسمه في سجل المتابعة.</p>
+      </section>` : ""}`;
+    Object.assign(actions, {
+      "my-password": myPasswordForm,
+      "add-user": addUserForm,
+      "edit-user": el => editUserForm(users[+el.dataset.i]),
+    });
+  }
+
   function soon(title) {
     crumb.innerHTML = `<a href="#/">الرئيسية</a> / ${esc(title)}`;
     view.innerHTML = head(title, "") + `<section class="panel">${empty("tool", "هذه الشاشة لم تُبنَ بعد", "ستتاح في مرحلة قادمة من المنظومة.")}</section>`;
   }
 
   /* ---------- التوجيه ---------- */
-  const SOON = { statuses: "المواقف التنفيذية", reports: "التقارير", settings: "الإعدادات" };
+  const SOON = { statuses: "المواقف التنفيذية", reports: "التقارير" };
   function route() {
     const [, sec = "", id] = (location.hash || "#/").split("/");
     seq++;
@@ -615,6 +757,7 @@
     if (sec === "projects") id ? projectDetail(id) : projectsList();
     else if (sec === "companies") id ? companyDetail(id) : companiesList();
     else if (sec === "extracts") id ? extractDetail(id) : extractsList();
+    else if (sec === "settings") settings();
     else if (SOON[sec]) soon(SOON[sec]);
     else dashboard();
     window.scrollTo(0, 0);
