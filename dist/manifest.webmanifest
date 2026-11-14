@@ -1,0 +1,15 @@
+{
+  "name": "منظومة المتابعة — كتيبة 91 طرق",
+  "short_name": "منظومة المتابعة",
+  "lang": "ar",
+  "dir": "rtl",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#08263D",
+  "theme_color": "#08263D",
+  "icons": [
+    { "src": "assets/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "assets/icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

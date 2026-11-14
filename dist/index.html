@@ -4,9 +4,16 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#08263D" />
+    <link rel="icon" type="image/png" sizes="32x32" href="assets/favicon-32.png" />
+    <link rel="apple-touch-icon" href="assets/icon-180.png" />
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="preconnect" href="https://pbufzaowmoigdeiusjin.supabase.co" crossorigin />
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Alexandria:wght@400;500;600;700;800&display=swap" />
     <title>منظومة المتابعة</title>
+    <link rel="preload" as="image" href="assets/logo-600.webp" type="image/webp" fetchpriority="high" />
     <style>
-      @import url('https://fonts.googleapis.com/css2?family=Alexandria:wght@400;500;600;700;800&display=swap');
       :root { --navy:#08263D; --navy-2:#0c344f; --gold:#d4a72c; --gold-light:#f4d675; --mist:#f8f5ee; --muted:#9cb0be; --red:#d62828; }
       * { box-sizing:border-box; }
       body { margin:0; min-height:100vh; overflow:hidden; background:var(--navy); color:var(--mist); font-family:Alexandria, Tahoma, Arial, sans-serif; }
@@ -50,6 +57,7 @@
       @keyframes enter { from{opacity:0;transform:translateX(-25px)}to{opacity:1;transform:none} }
       @media(max-width:820px){ body{overflow:auto}.page{grid-template-columns:1fr; background:#f8f5ee}.brand{min-height:48vh;padding:36px 22px}.brand::after{width:400px;height:400px}.logo-zone{width:205px}.brand-copy{margin-top:20px;padding:12px 18px}.brand-copy h1{font-size:23px}.brand-copy p{font-size:11px}.login-side{padding:38px 25px 42px}.flag{top:22px;right:25px;font-size:10px;padding:7px 10px}h2{font-size:27px} }
       @media(prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;animation-iteration-count:1!important;scroll-behavior:auto!important} }
+      .logo { height:auto; } .logo-zone picture { display:contents; }
     </style>
   </head>
   <body>
@@ -58,7 +66,7 @@
         <div class="flag"><i></i> كتيبة 91 طرق — فرع الطرق</div>
         <div class="logo-zone">
           <div class="rays"></div><div class="orbit"></div><div class="shine"></div>
-          <img class="logo" src="assets/logo.png" alt="شعار منظومة المتابعة" />
+          <picture><source srcset="assets/logo-600.webp" type="image/webp" /><img class="logo" src="assets/logo-600.png" width="600" height="600" alt="شعار منظومة المتابعة" fetchpriority="high" decoding="async" /></picture>
         </div>
         <div class="brand-copy"><h1>منظومة المتابعة</h1><p>متابعة مشروعات الطرق والشركات المنفذة والمستخلصات</p></div>
       </section>

@@ -54,6 +54,21 @@
   const condPill = c => c ? `<span class="pill ${COND[c]?.[1] || ""}">${esc(COND[c]?.[0] || c)}</span>` : `<span class="pill gray">لا يوجد موقف</span>`;
   const STALE_DAYS = 7; // المشروع الجاري اللي ما اتسجلوش موقف من أكتر من كده بيظهر كتنبيه
   const daysSince = d => d ? Math.floor((Date.now() - new Date(d + "T00:00:00")) / 864e5) : null;
+  // الجدول الزمني: نسبة الوقت المنقضي من (البدء → الانتهاء المخطط) مقارنة بنسبة الإنجاز الفعلية
+  // الانحراف = الإنجاز − الوقت المنقضي (بالنقاط). سالب = متأخر عن الجدول.
+  const SCHED_WARN = 10; // تأخر أكبر من كده = «متأخر عن الجدول»
+  function schedule(p) {
+    if (!p.start_date || !p.planned_end_date || p.status === "completed" || p.status === "planned") return null;
+    const s = new Date(p.start_date + "T00:00:00"), e = new Date(p.planned_end_date + "T00:00:00");
+    if (!(e > s)) return null;
+    const elapsed = Math.max(0, Math.min(100, (Date.now() - s) / (e - s) * 100));
+    const variance = Number(p.progress) - elapsed;
+    return { elapsed, variance, late: variance <= -SCHED_WARN, overdue: Date.now() > e && Number(p.progress) < 100 };
+  }
+  const schedPill = sc => !sc ? "—"
+    : sc.overdue ? `<span class="pill red">تجاوز موعد الانتهاء</span>`
+    : sc.late ? `<span class="pill amber">متأخر ${nf.format(Math.round(-sc.variance))} نقطة</span>`
+    : `<span class="pill green">${sc.variance >= 0 ? "في الموعد" : `متأخر ${nf.format(Math.round(-sc.variance))} نقطة`}</span>`;
   const opts = (map, sel) => Object.entries(map).map(([k, v]) => `<option value="${k}"${k === sel ? " selected" : ""}>${esc(Array.isArray(v) ? v[0] : v)}</option>`).join("");
 
   function toast(msg, bad) {
@@ -452,12 +467,13 @@
       $("#cnt").textContent = rows.length ? `${nf.format(list.length)} من ${nf.format(rows.length)}` : "";
       $("#list").innerHTML = !rows.length ? empty("proj", "لا توجد مشروعات مسجلة", ctx.canEdit ? "ابدأ بإضافة أول مشروع من زر «إضافة مشروع»." : "ستظهر المشروعات هنا بعد أن يضيفها المسؤول عن الإدخال.")
         : !list.length ? empty("search", "لا توجد نتائج", "غيّر كلمات البحث أو الحالة المختارة.")
-        : `<table class="table cards"><thead><tr><th>رقم المشروع</th><th>المشروع</th><th>الحالة</th><th>الإنجاز</th><th>الشركات</th><th>الانتهاء المخطط</th></tr></thead><tbody>${list.map(r => `
+        : `<table class="table cards"><thead><tr><th>رقم المشروع</th><th>المشروع</th><th>الحالة</th><th>الإنجاز</th><th>الجدول الزمني</th><th>الشركات</th><th>الانتهاء المخطط</th></tr></thead><tbody>${list.map(r => `
           <tr class="row-link" data-href="#/projects/${r.id}" tabindex="0">
             <td data-label="رقم المشروع" class="mono">${esc(r.code)}</td>
             <td data-label="المشروع" class="title"><span class="company">${esc(r.name)}</span>${r.location ? `<span class="sub">${esc(r.location)}</span>` : ""}</td>
             <td data-label="الحالة">${pill(r.status)}</td>
             <td data-label="الإنجاز">${progress(r.progress)}</td>
+            <td data-label="الجدول الزمني">${schedPill(schedule(r))}</td>
             <td data-label="الشركات">${nf.format(r.companies_count)}</td>
             <td data-label="الانتهاء المخطط">${date(r.planned_end_date)}</td>
           </tr>`).join("")}</tbody></table>`;
@@ -492,6 +508,7 @@
       `<section class="info panel">
         <div><span>الحالة</span>${pill(p.status)}</div>
         <div><span>نسبة الإنجاز</span>${progress(p.progress)}</div>
+        ${(sc => sc ? `<div><span>الوقت المنقضي من المدة</span>${progress(Math.round(sc.elapsed))}</div><div><span>الجدول الزمني</span>${schedPill(sc)}</div>` : "")(schedule(p))}
         <div><span>قيمة التعاقد</span><b>${money(p.contract_value)}</b></div>
         <div><span>تاريخ البدء</span><b>${date(p.start_date)}</b></div>
         <div><span>الانتهاء المخطط</span><b>${date(p.planned_end_date)}</b></div>
@@ -775,7 +792,7 @@
     : t === "date" ? date(v) : t === "num" ? nf.format(Number(v)) : esc(v);
   function renderReport(rep) {
     return `<div class="rep-head">
-        <img src="assets/logo.png" alt="" /><div><b>منظومة المتابعة — كتيبة 91 طرق</b><h2>${esc(rep.title)}</h2>
+        <img src="assets/logo-128.png" width="52" height="52" alt="" /><div><b>منظومة المتابعة — كتيبة 91 طرق</b><h2>${esc(rep.title)}</h2>
         <p>${rep.meta.map(esc).join("، ")}</p></div>
       </div>${rep.sections.map(s => `
       <div class="rep-sec">${s.title ? `<h3>${esc(s.title)}</h3>` : ""}
@@ -847,8 +864,9 @@
         if (EXT_OPEN.includes(e.status)) open[e.project_id] = (open[e.project_id] || 0) + 1;
       });
       const latest = Object.fromEntries(d.latest.map(l => [l.project_id, l]));
-      const rows = d.projects.filter(p => !f.status || p.status === f.status).map(p => ({
+      const rows = d.projects.filter(p => !f.status || p.status === f.status).map(p => ({ p, sc: schedule(p) })).map(({ p, sc }) => ({
         code: p.code, name: p.name, location: p.location, status: STATUS[p.status]?.[0], progress: p.progress, contract: p.contract_value,
+        elapsed: sc?.elapsed, variance: sc ? Math.round(sc.variance) : null,
         companies: p.companies_count, approved: approved[p.id] || 0, open: open[p.id] || 0,
         last: latest[p.id]?.report_date, cond: latest[p.id]?.condition ? COND[latest[p.id].condition][0] : "", obst: latest[p.id]?.obstacles,
       }));
@@ -857,7 +875,9 @@
         meta: [`الحالة: ${f.status ? STATUS[f.status][0] : "الكل"}`, `عدد المشروعات: ${nf.format(rows.length)}`],
         sections: [{ sheet: "المشروعات", columns: [
           { key: "code", label: "رقم المشروع", w: 14 }, { key: "name", label: "المشروع", w: 32 }, { key: "location", label: "الموقع" },
-          { key: "status", label: "الحالة", w: 14 }, { key: "progress", label: "الإنجاز", type: "pct" }, { key: "contract", label: "قيمة التعاقد (ج.م)", type: "money" },
+          { key: "status", label: "الحالة", w: 14 }, { key: "progress", label: "الإنجاز", type: "pct" },
+          { key: "elapsed", label: "الوقت المنقضي", type: "pct", w: 12 }, { key: "variance", label: "الانحراف عن الجدول (نقطة)", type: "num", w: 14 },
+          { key: "contract", label: "قيمة التعاقد (ج.م)", type: "money" },
           { key: "companies", label: "الشركات", type: "num" }, { key: "approved", label: "المعتمد من المستخلصات (ج.م)", type: "money", w: 20 },
           { key: "open", label: "مستخلصات تحت المتابعة", type: "num", w: 14 }, { key: "last", label: "آخر موقف", type: "date" },
           { key: "cond", label: "الوضع", w: 10 }, { key: "obst", label: "العوائق", type: "long" }],

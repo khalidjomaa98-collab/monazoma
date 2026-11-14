@@ -55,6 +55,7 @@
         const { data, error } = await sb.auth.signInWithPassword({ email: toEmail(user), password: pass });
         if (error) throw error;
         const profile = await loadProfile(data.user.id);
+        if (profile?.active) writeCached(profile);
         if (!profile || !profile.active) {
           await sb.auth.signOut();
           throw Object.assign(new Error("inactive"), { code: "inactive" });
@@ -72,22 +73,41 @@
   }
 
   /* ---------- الصفحات المحمية ---------- */
+  // نسخة من بيانات المستخدم على الجهاز: الصفحة تظهر فورًا من غير ما تستنى السيرفر،
+  // وبعدها بنتأكد في الخلفية (لو الحساب اتوقف أو الصلاحية اتغيرت بنخرج/نعيد التحميل).
+  // الحماية الفعلية للبيانات في قاعدة البيانات نفسها (RLS)، فالنسخة دي للعرض بس.
+  const PROFILE_KEY = "monazoma-profile";
+  const readCached = uid => safe(() => { const p = JSON.parse(localStorage.getItem(PROFILE_KEY)); return p && p.id === uid && p.active ? p : null; }, null);
+  const writeCached = p => safe(() => localStorage.setItem(PROFILE_KEY, JSON.stringify(p)));
+  const clearCached = () => safe(() => localStorage.removeItem(PROFILE_KEY));
+
   async function guard() {
     const { data: { session } } = await sb.auth.getSession();
-    if (!session) { location.replace("index.html"); return null; }
-    let profile;
-    try { profile = await loadProfile(session.user.id); } catch { profile = null; }
-    if (!profile || !profile.active) { await sb.auth.signOut(); location.replace("index.html"); return null; }
+    if (!session) { clearCached(); location.replace("index.html"); return null; }
+    let leaving = false;
+    const leave = () => { if (!leaving) { leaving = true; clearCached(); location.replace("index.html"); } };
+    const kick = async () => { clearCached(); await sb.auth.signOut(); leave(); };
+
+    let profile = readCached(session.user.id);
+    const verify = loadProfile(session.user.id).then(fresh => {
+      if (!fresh || !fresh.active) { kick(); return null; }
+      writeCached(fresh);
+      return fresh;
+    }, () => null); // من غير نت: نكمّل بالنسخة المحفوظة
+    if (profile) {
+      verify.then(fresh => { if (fresh && (fresh.role !== profile.role || fresh.name !== profile.name)) location.reload(); });
+    } else {
+      profile = await verify;
+      if (!profile) { await kick(); return null; }
+    }
 
     const name = profile.name || session.user.email.replace(`@${USER_DOMAIN}`, "");
     document.querySelectorAll("[data-user-name]").forEach(el => el.textContent = name);
     document.querySelectorAll("[data-user-role]").forEach(el => el.textContent = ROLE_LABEL[profile.role] || profile.role);
     document.querySelectorAll("[data-user-initial]").forEach(el => el.textContent = name.trim().charAt(0) || "م");
     if (profile.role === "viewer") document.querySelectorAll("[data-needs-edit]").forEach(el => el.hidden = true);
-    let leaving = false;
-    const leave = () => { if (!leaving) { leaving = true; location.replace("index.html"); } };
     document.querySelectorAll("[data-logout]").forEach(el => el.addEventListener("click", async () => {
-      el.disabled = true; await sb.auth.signOut(); leave();
+      el.disabled = true; clearCached(); await sb.auth.signOut(); leave();
     }));
     sb.auth.onAuthStateChange(ev => { if (ev === "SIGNED_OUT") leave(); });
     document.documentElement.classList.remove("auth-pending");
