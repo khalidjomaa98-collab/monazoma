@@ -85,3 +85,19 @@ a.stat{color:inherit;text-decoration:none;transition:border-color .2s,box-shadow
   .table.cards td.scope{max-width:none;grid-column:1/-1}
   .table.cards tfoot tr{display:flex;justify-content:space-between}.table.cards tfoot td:empty{display:none}
 }
+
+/* المستخلصات */
+.pill.dark{background:#e9ecee;color:#3d4f59;text-decoration:line-through;text-decoration-color:#3d4f5966}
+.num{font-variant-numeric:tabular-nums;white-space:nowrap}.info b.strong{font-size:15px;color:var(--navy)}
+.table td .sub{white-space:normal}
+.welcome a{color:inherit;text-decoration:none;border-bottom:1px dotted #9fb1ba}.welcome a:hover{color:var(--ink)}
+.f small.bad{color:#b72e2e;font-weight:700}
+.steps .panel-head{margin-bottom:12px}.step-btns{display:flex;gap:8px;flex-wrap:wrap}
+.timeline{list-style:none;margin:0;padding:0}
+.timeline li{position:relative;display:grid;grid-template-columns:14px 1fr;gap:12px;padding:0 0 18px}
+.timeline li:not(:last-child)::before{content:"";position:absolute;inset-inline-start:6px;top:14px;bottom:0;width:2px;background:var(--line)}
+.timeline .dot{width:14px;height:14px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 0 1px var(--line);background:#9aabb3;margin-top:2px}
+.timeline .dot.amber{background:var(--amber)}.timeline .dot.red{background:var(--red)}.timeline .dot.blue{background:#1c7293}.timeline .dot.green{background:var(--green)}.timeline .dot.dark{background:#3d4f59}
+.timeline b{font-size:11px}.timeline p{margin:5px 0;font-size:11px;line-height:1.8;color:#4d6571;white-space:pre-line;background:#f6f9f9;border-radius:8px;padding:7px 10px}
+.timeline time{display:block;margin-top:4px;color:#8fa0a8;font-size:9px}
+@media(max-width:700px){.step-btns>*{flex:1}}

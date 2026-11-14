@@ -1,4 +1,4 @@
-/* منظومة المتابعة — شاشات المنظومة (لوحة التحكم، المشروعات، الشركات) */
+/* منظومة المتابعة — شاشات المنظومة (لوحة التحكم، المشروعات، الشركات، المستخلصات) */
 (function () {
   const sb = monazoma.sb;
   const $ = (sel, root = document) => root.querySelector(sel);
@@ -22,6 +22,8 @@
     link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
     x: '<path d="M18 6 6 18M6 6l12 12"/>',
     tool: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
+    ext: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8M8 17h5"/>',
+    flow: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6H14a4 4 0 0 1 4 4v5.5"/>',
   };
   const nf = new Intl.NumberFormat("ar-EG");
   const money = v => v == null || v === "" ? "—" : nf.format(Number(v)) + " ج.م";
@@ -31,6 +33,21 @@
   const KIND = { contractor: "مقاول رئيسي", subcontractor: "مقاول باطن", supplier: "مورّد" };
   const pill = s => `<span class="pill ${STATUS[s]?.[1] || ""}">${esc(STATUS[s]?.[0] || s)}</span>`;
   const progress = v => `<div class="prog"><div class="progress"><i style="width:${Math.max(0, Math.min(100, Number(v) || 0))}%"></i></div><span>${nf.format(Number(v) || 0)}٪</span></div>`;
+  // حالات المستخلص: [الاسم، اللون]، والانتقالات المسموحة من كل حالة
+  const EXT_STATUS = {
+    submitted: ["مقدَّم", "gray"], under_review: ["قيد المراجعة", "amber"], needs_completion: ["مطلوب استكمال", "red"],
+    approved: ["معتمد", "blue"], paid: ["مصروف", "green"], rejected: ["مرفوض", "dark"],
+  };
+  const EXT_NEXT = {
+    submitted: ["under_review", "rejected"], under_review: ["approved", "needs_completion", "rejected"],
+    needs_completion: ["under_review"], approved: ["paid"], rejected: ["under_review"], paid: [],
+  };
+  const EXT_ACTION = { under_review: "بدء المراجعة", needs_completion: "طلب استكمال", approved: "اعتماد", paid: "تسجيل الصرف", rejected: "رفض" };
+  const NOTE_REQUIRED = new Set(["needs_completion", "rejected"]);
+  const EXT_OPEN = ["submitted", "under_review", "needs_completion"]; // تحت المتابعة
+  const EXT_KIND = { interim: "جاري", final: "ختامي" };
+  const extPill = s => `<span class="pill ${EXT_STATUS[s]?.[1] || ""}">${esc(EXT_STATUS[s]?.[0] || s)}</span>`;
+  const extNo = e => `مستخلص ${EXT_KIND[e.kind] || ""} رقم ${nf.format(e.number)}`;
   const opts = (map, sel) => Object.entries(map).map(([k, v]) => `<option value="${k}"${k === sel ? " selected" : ""}>${esc(Array.isArray(v) ? v[0] : v)}</option>`).join("");
 
   function toast(msg, bad) {
@@ -39,9 +56,13 @@
   }
   function errText(e) {
     if (!navigator.onLine) return "لا يوجد اتصال بالإنترنت.";
-    if (e?.code === "23505") return e.message.includes("companies_name_key") ? "توجد شركة مسجلة بنفس الاسم." : e.message.includes("projects_code_key") ? "يوجد مشروع مسجل بنفس الرقم." : "هذه الشركة مرتبطة بالمشروع بالفعل.";
-    if (e?.code === "23503") return "لا يمكن الحذف: الشركة مرتبطة بمشروعات. احذف الارتباط أولًا.";
-    if (e?.code === "23514") return "تحقق من القيم المدخلة (النسب بين 0 و100، وتاريخ الانتهاء بعد البدء).";
+    const m = e?.message || "";
+    if (e?.code === "23505") return m.includes("companies_name_key") ? "توجد شركة مسجلة بنفس الاسم." : m.includes("projects_code_key") ? "يوجد مشروع مسجل بنفس الرقم."
+      : m.includes("extracts_") ? "يوجد مستخلص بنفس الرقم لهذه الشركة في هذا المشروع." : "هذه الشركة مرتبطة بالمشروع بالفعل.";
+    if (e?.code === "23503") return m.includes("extracts") ? "لا يمكن الحذف: توجد مستخلصات مسجلة على هذا الارتباط. احذف المستخلصات أولًا."
+      : "لا يمكن الحذف: الشركة مرتبطة بمشروعات. احذف الارتباط أولًا.";
+    if (e?.code === "23514") return m.includes("extracts") ? "تحقق من القيم: الاستقطاعات لا تزيد عن قيمة الأعمال، ونهاية الفترة بعد بدايتها."
+      : "تحقق من القيم المدخلة (النسب بين 0 و100، وتاريخ الانتهاء بعد البدء).";
     if (e?.code === "42501" || e?.code === "PGRST301") return "ليس لديك صلاحية لهذا الإجراء.";
     return "تعذّر تنفيذ العملية، حاول مرة أخرى.";
   }
@@ -95,6 +116,7 @@
     };
     dlg.showModal();
     setTimeout(() => $("input,select,textarea", dlg)?.focus(), 30);
+    return form;
   }
 
   const PROJECT_FIELDS = [
@@ -162,6 +184,110 @@
     });
   }
 
+  /* ---------- المستخلصات: النوافذ ---------- */
+  const EXTRACT_FIELDS = [
+    { name: "number", label: "رقم المستخلص", type: "number", required: true, min: 1, step: "1" },
+    { name: "kind", label: "النوع", type: "select" },
+    { name: "submitted_on", label: "تاريخ التقديم", type: "date", required: true },
+    { name: "period_from", label: "الفترة من", type: "date" },
+    { name: "period_to", label: "الفترة إلى", type: "date" },
+    { name: "gross_amount", label: "قيمة الأعمال (ج.م)", type: "number", required: true, min: 0, step: "0.01" },
+    { name: "deductions", label: "الاستقطاعات (ج.م)", type: "number", min: 0, step: "0.01", value: 0, hint: "تأمينات، ضرائب، دفعات مقدمة، غرامات…" },
+    { name: "notes", label: "ملاحظات", type: "textarea", wide: true, maxlength: 2000 },
+  ];
+  const today = () => new Date().toLocaleDateString("en-CA"); // yyyy-mm-dd بالتوقيت المحلي
+
+  async function extractForm(e = null, preset = {}) {
+    let links = [];
+    if (!e) {
+      try { links = await q(sb.from("project_companies").select("project_id,company_id,projects(code,name),companies(name)")); }
+      catch (err) { toast(errText(err), true); return; }
+      if (preset.project_id) links = links.filter(l => l.project_id === preset.project_id);
+      if (preset.company_id) links = links.filter(l => l.company_id === preset.company_id);
+      if (!links.length) { toast("لا توجد شركات مرتبطة بمشروعات. اربط الشركة بالمشروع أولًا من صفحة المشروع.", true); return; }
+    }
+    const projects = [...new Map(links.map(l => [l.project_id, l.projects])).entries()].sort((a, b) => a[1].code.localeCompare(b[1].code, "ar"));
+    const fields = [
+      ...(e ? [] : [
+        { name: "project_id", label: "المشروع", type: "select", required: true, wide: true,
+          options: (projects.length > 1 ? `<option value="">اختر المشروع…</option>` : "") + projects.map(([id, p]) => `<option value="${id}">${esc(p.code)} — ${esc(p.name)}</option>`).join("") },
+        { name: "company_id", label: "الشركة", type: "select", required: true, wide: true, options: "" },
+      ]),
+      ...EXTRACT_FIELDS.map(f => f.name === "kind" ? { ...f, options: opts(EXT_KIND, e?.kind || "interim") } : f),
+    ];
+    const form = openForm({
+      title: e ? `تعديل ${extNo(e)}` : "تسجيل مستخلص", fields,
+      data: e || { submitted_on: today() },
+      submitLabel: e ? "حفظ التعديلات" : "تسجيل المستخلص",
+      onSubmit: async v => {
+        const row = await q(e ? sb.from("extracts").update(v).eq("id", e.id).select().single() : sb.from("extracts").insert(v).select().single());
+        toast(e ? "تم حفظ التعديلات." : "تم تسجيل المستخلص.");
+        e ? route() : (location.hash = `#/extracts/${row.id}`);
+      },
+      danger: e && ctx.isAdmin ? { label: "حذف المستخلص", confirm: `حذف ${extNo(e)} وسجل متابعته؟ لا يمكن التراجع.`, run: async () => { await q(sb.from("extracts").delete().eq("id", e.id)); toast("تم حذف المستخلص."); location.hash = "#/extracts"; } } : null,
+    });
+    // الصافي يتحسب وانت بتكتب
+    const el = n => form.elements[n];
+    const hint = el("deductions").parentElement.querySelector("small");
+    const baseHint = hint.textContent;
+    const showNet = () => {
+      const g = Number(el("gross_amount").value) || 0, d = Number(el("deductions").value) || 0;
+      hint.textContent = el("gross_amount").value ? `الصافي المستحق: ${money(g - d)}` : baseHint;
+      hint.classList.toggle("bad", d > g);
+    };
+    el("gross_amount").oninput = el("deductions").oninput = showNet; showNet();
+    if (e) return;
+    // اختيار المشروع يحدد الشركات، واختيار الشركة يقترح الرقم التالي
+    let numberTouched = false; el("number").addEventListener("input", () => numberTouched = true);
+    const fillCompanies = () => {
+      const pid = el("project_id").value, list = links.filter(l => l.project_id === pid).sort((a, b) => a.companies.name.localeCompare(b.companies.name, "ar"));
+      el("company_id").innerHTML = !pid ? `<option value="">اختر المشروع أولًا</option>`
+        : (list.length > 1 ? `<option value="">اختر الشركة…</option>` : "") + list.map(l => `<option value="${l.company_id}">${esc(l.companies.name)}</option>`).join("");
+      if (preset.company_id) el("company_id").value = preset.company_id;
+      suggestNumber();
+    };
+    const suggestNumber = async () => {
+      const pid = el("project_id").value, cid = el("company_id").value;
+      if (!pid || !cid || numberTouched) return;
+      try {
+        const last = await q(sb.from("extracts").select("number").eq("project_id", pid).eq("company_id", cid).order("number", { ascending: false }).limit(1));
+        if (!numberTouched && el("project_id").value === pid && el("company_id").value === cid) el("number").value = (last[0]?.number || 0) + 1;
+      } catch { /* الاقتراح اختياري */ }
+    };
+    el("project_id").onchange = fillCompanies;
+    el("company_id").onchange = suggestNumber;
+    fillCompanies();
+  }
+
+  function statusForm(e, to) {
+    const needNote = NOTE_REQUIRED.has(to);
+    openForm({
+      title: `${EXT_ACTION[to]} — ${extNo(e)}`,
+      fields: [{ name: "note", label: needNote ? "السبب / المطلوب من الشركة" : "ملاحظة (اختياري)", type: "textarea", wide: true, required: needNote, maxlength: 1000 }],
+      submitLabel: EXT_ACTION[to],
+      onSubmit: async v => {
+        await q(sb.rpc("set_extract_status", { p_id: e.id, p_status: to, p_note: v.note }));
+        toast(`تم: ${EXT_ACTION[to]}.`); route();
+      },
+    });
+  }
+
+  // جدول مستخلصات (يُستخدم في القائمة وصفحة المشروع والشركة ولوحة التحكم)
+  function extractsTable(rows, { project = true, company = true, total = true } = {}) {
+    const counted = rows.filter(r => r.status !== "rejected"); // المرفوض لا يدخل الإجمالي
+    const sum = counted.reduce((s, r) => s + Number(r.net_amount), 0);
+    const totalLabel = counted.length < rows.length ? "إجمالي الصافي (بدون المرفوض)" : "إجمالي الصافي";
+    return `<table class="table cards"><thead><tr><th>المستخلص</th>${company ? "<th>الشركة</th>" : ""}${project ? "<th>المشروع</th>" : ""}<th>الفترة</th><th>الصافي</th><th>الحالة</th></tr></thead><tbody>${rows.map(r => `
+      <tr class="row-link" data-href="#/extracts/${r.id}" tabindex="0">
+        <td data-label="المستخلص" class="title"><span class="company">${esc(EXT_KIND[r.kind])} رقم ${nf.format(r.number)}</span><span class="sub">قُدّم ${date(r.submitted_on)}</span></td>
+        ${company ? `<td data-label="الشركة">${esc(r.company_name)}</td>` : ""}
+        ${project ? `<td data-label="المشروع"><span class="mono">${esc(r.project_code)}</span><span class="sub">${esc(r.project_name)}</span></td>` : ""}
+        <td data-label="الفترة">${r.period_from || r.period_to ? `${date(r.period_from)} ← ${date(r.period_to)}` : "—"}</td>
+        <td data-label="الصافي" class="num">${money(r.net_amount)}</td>
+        <td data-label="الحالة">${extPill(r.status)}</td>
+      </tr>`).join("")}</tbody>${total && rows.length > 1 ? `<tfoot><tr><td colspan="${2 + company + project}">${totalLabel}</td><td class="num">${money(sum)}</td><td></td></tr></tfoot>` : ""}</table>`;
+  }
+
   /* ---------- الشاشات ---------- */
   async function dashboard() {
     const my = seq;
@@ -169,12 +295,23 @@
     view.replaceChildren($("#tpl-dashboard").content.cloneNode(true));
     $$("[data-needs-edit]", view).forEach(el => el.hidden = !ctx.canEdit);
     try {
-      const [pc, cc, active] = await Promise.all([
+      const [pc, cc, active, open, suspended, latest] = await Promise.all([
         q(sb.from("projects").select("id", { count: "exact", head: true })),
         q(sb.from("companies").select("id", { count: "exact", head: true })),
         q(sb.from("projects").select("progress").eq("status", "active")),
+        q(sb.from("extracts").select("status").in("status", EXT_OPEN)),
+        q(sb.from("projects").select("id", { count: "exact", head: true }).eq("status", "suspended")),
+        q(sb.from("extracts_overview").select("*").order("submitted_on", { ascending: false }).order("created_at", { ascending: false }).limit(5)),
       ]);
       if (my !== seq) return;
+      const needs = open.filter(r => r.status === "needs_completion").length;
+      $('[data-stat="extracts"]', view).textContent = nf.format(open.length);
+      $('[data-stat-note="extracts"]', view).textContent = open.length ? `${nf.format(open.length - needs)} بانتظار المراجعة، ${nf.format(needs)} مطلوب استكمال` : "لا توجد مستخلصات تحت المتابعة";
+      $('[data-stat="alerts"]', view).textContent = nf.format(needs + suspended);
+      $('[data-stat-note="alerts"]', view).textContent = needs + suspended
+        ? [needs && `${nf.format(needs)} مستخلص مطلوب استكماله`, suspended && `${nf.format(suspended)} مشروع متوقف`].filter(Boolean).join("، ")
+        : "لا توجد تنبيهات";
+      if (latest.length) $("[data-latest-extracts]", view).innerHTML = extractsTable(latest, { project: false, total: false });
       $('[data-stat="projects"]', view).textContent = nf.format(pc);
       $('[data-stat-note="projects"]', view).textContent = pc ? `منها ${nf.format(active.length)} جارٍ التنفيذ` : "لم تُسجَّل مشروعات بعد";
       $('[data-stat="companies"]', view).textContent = nf.format(cc);
@@ -229,11 +366,12 @@
     const my = seq;
     crumb.innerHTML = `<a href="#/">الرئيسية</a> / <a href="#/projects">المشروعات</a> / …`;
     loading();
-    let p, links;
+    let p, links, exts;
     try {
-      [p, links] = await Promise.all([
+      [p, links, exts] = await Promise.all([
         q(sb.from("projects").select("*").eq("id", id).maybeSingle()),
         q(sb.from("project_companies").select("*, companies(id,name,kind)").eq("project_id", id)),
+        q(sb.from("extracts_overview").select("*").eq("project_id", id).order("submitted_on", { ascending: false }).order("number", { ascending: false })),
       ]);
     } catch (e) { return my === seq && failed(e); }
     if (my !== seq) return;
@@ -241,7 +379,10 @@
     links.sort((a, b) => a.companies.name.localeCompare(b.companies.name, "ar"));
     crumb.innerHTML = `<a href="#/">الرئيسية</a> / <a href="#/projects">المشروعات</a> / <b>${esc(p.code)}</b>`;
     const total = links.reduce((s, l) => s + (Number(l.contract_value) || 0), 0);
-    view.innerHTML = head(p.name, `<span class="mono">${esc(p.code)}</span>${p.location ? ` · ${esc(p.location)}` : ""}`, editBtn("edit-project", "تعديل البيانات", "edit", "btn ghost")) +
+    const approvedBy = {}; // صافي المستخلصات المعتمدة والمصروفة لكل شركة
+    exts.filter(x => x.status === "approved" || x.status === "paid").forEach(x => approvedBy[x.company_id] = (approvedBy[x.company_id] || 0) + Number(x.net_amount));
+    const approvedAll = Object.values(approvedBy).reduce((s, v) => s + v, 0);
+    view.innerHTML = head(p.name, `<span class="mono">${esc(p.code)}</span>${p.location ? `، ${esc(p.location)}` : ""}`, editBtn("edit-project", "تعديل البيانات", "edit", "btn ghost")) +
       `<section class="info panel">
         <div><span>الحالة</span>${pill(p.status)}</div>
         <div><span>نسبة الإنجاز</span>${progress(p.progress)}</div>
@@ -254,14 +395,19 @@
       <section class="panel">
         <div class="panel-head"><h2>الشركات المرتبطة بالمشروع</h2>${editBtn("link-company", "ربط شركة", "link", "btn ghost sm")}</div>
         ${!links.length ? empty("co", "لا توجد شركات مرتبطة", ctx.canEdit ? "اربط الشركات المنفذة والموردين من زر «ربط شركة»." : "لم تُربط شركات بهذا المشروع بعد.") :
-        `<table class="table cards"><thead><tr><th>الشركة</th><th>الدور</th><th>نطاق الأعمال</th><th>قيمة التعاقد</th>${ctx.canEdit ? "<th></th>" : ""}</tr></thead><tbody>${links.map((l, i) => `
+        `<table class="table cards"><thead><tr><th>الشركة</th><th>الدور</th><th>نطاق الأعمال</th><th>قيمة التعاقد</th><th>المعتمد من المستخلصات</th>${ctx.canEdit ? "<th></th>" : ""}</tr></thead><tbody>${links.map((l, i) => `
           <tr>
             <td data-label="الشركة" class="title"><a class="company" href="#/companies/${l.company_id}">${esc(l.companies.name)}</a></td>
             <td data-label="الدور">${esc(KIND[l.role])}</td>
             <td data-label="نطاق الأعمال" class="scope">${esc(l.scope) || "—"}</td>
-            <td data-label="قيمة التعاقد">${money(l.contract_value)}</td>
+            <td data-label="قيمة التعاقد" class="num">${money(l.contract_value)}</td>
+            <td data-label="المعتمد من المستخلصات" class="num">${approvedBy[l.company_id] ? money(approvedBy[l.company_id]) : "—"}${l.contract_value && approvedBy[l.company_id] ? `<span class="sub">${nf.format(Math.round(approvedBy[l.company_id] / l.contract_value * 100))}٪ من التعاقد</span>` : ""}</td>
             ${ctx.canEdit ? `<td class="act"><button class="icon-btn" data-action="edit-link" data-i="${i}" aria-label="تعديل الارتباط">${svg(ICON.edit)}</button></td>` : ""}
-          </tr>`).join("")}</tbody>${links.length > 1 ? `<tfoot><tr><td colspan="3">إجمالي تعاقدات الشركات</td><td>${money(total)}</td>${ctx.canEdit ? "<td></td>" : ""}</tr></tfoot>` : ""}</table>`}
+          </tr>`).join("")}</tbody>${links.length > 1 ? `<tfoot><tr><td colspan="3">الإجمالي</td><td class="num">${money(total)}</td><td class="num">${approvedAll ? money(approvedAll) : "—"}</td>${ctx.canEdit ? "<td></td>" : ""}</tr></tfoot>` : ""}</table>`}
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>مستخلصات المشروع</h2>${links.length ? editBtn("add-extract-here", "تسجيل مستخلص", "plus", "btn ghost sm") : ""}</div>
+        ${exts.length ? extractsTable(exts, { project: false }) : empty("ext", "لا توجد مستخلصات", links.length ? (ctx.canEdit ? "سجّل مستخلصات الشركات من زر «تسجيل مستخلص»." : "لم تُسجَّل مستخلصات لهذا المشروع بعد.") : "اربط الشركات بالمشروع أولًا، ثم سجّل مستخلصاتها.")}
       </section>`;
     Object.assign(actions, {
       "edit-project": () => projectForm(p),
@@ -275,6 +421,7 @@
         } catch (e) { toast(errText(e), true); }
       },
       "edit-link": el => linkForm(id, links[+el.dataset.i]),
+      "add-extract-here": () => extractForm(null, { project_id: id }),
     });
   }
 
@@ -319,11 +466,12 @@
     const my = seq;
     crumb.innerHTML = `<a href="#/">الرئيسية</a> / <a href="#/companies">الشركات</a> / …`;
     loading();
-    let c, links;
+    let c, links, exts;
     try {
-      [c, links] = await Promise.all([
+      [c, links, exts] = await Promise.all([
         q(sb.from("companies").select("*").eq("id", id).maybeSingle()),
         q(sb.from("project_companies").select("*, projects(id,code,name,status,progress)").eq("company_id", id)),
+        q(sb.from("extracts_overview").select("*").eq("company_id", id).order("submitted_on", { ascending: false }).order("number", { ascending: false })),
       ]);
     } catch (e) { return my === seq && failed(e); }
     if (my !== seq) return;
@@ -350,8 +498,98 @@
             <td data-label="الإنجاز">${progress(l.projects.progress)}</td>
             <td data-label="قيمة التعاقد">${money(l.contract_value)}</td>
           </tr>`).join("")}</tbody></table>`}
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>مستخلصات الشركة</h2>${links.length ? editBtn("add-extract-here", "تسجيل مستخلص", "plus", "btn ghost sm") : ""}</div>
+        ${exts.length ? extractsTable(exts, { company: false }) : empty("ext", "لا توجد مستخلصات", "لم تُسجَّل مستخلصات لهذه الشركة بعد.")}
       </section>`;
-    Object.assign(actions, { "edit-company": () => companyForm(c) });
+    Object.assign(actions, { "edit-company": () => companyForm(c), "add-extract-here": () => extractForm(null, { company_id: id }) });
+  }
+
+  async function extractsList() {
+    const my = seq;
+    crumb.innerHTML = `<a href="#/">الرئيسية</a> / المستخلصات`;
+    loading();
+    let rows;
+    try { rows = await q(sb.from("extracts_overview").select("*").order("submitted_on", { ascending: false }).order("created_at", { ascending: false })); }
+    catch (e) { return my === seq && failed(e); }
+    if (my !== seq) return;
+    const f = extractsList.f ||= { text: "", status: "open", project: "" };
+    const projects = [...new Map(rows.map(r => [r.project_id, r])).values()].sort((a, b) => a.project_code.localeCompare(b.project_code, "ar"));
+    if (f.project && !projects.some(p => p.project_id === f.project)) f.project = "";
+    view.innerHTML = head("المستخلصات", "مستخلصات الشركات في كل المشروعات وحالة مراجعتها.", editBtn("add-extract", "تسجيل مستخلص")) +
+      `<section class="panel">
+        <div class="filters">
+          <label class="search">${svg(ICON.search)}<input type="search" id="q" placeholder="بحث باسم الشركة أو المشروع أو رقم المستخلص" value="${esc(f.text)}" /></label>
+          <select id="st" aria-label="الحالة">
+            <option value="">كل الحالات</option><option value="open"${f.status === "open" ? " selected" : ""}>تحت المتابعة</option>${opts(EXT_STATUS, f.status)}
+          </select>
+          <select id="pj" aria-label="المشروع"><option value="">كل المشروعات</option>${projects.map(p => `<option value="${p.project_id}"${p.project_id === f.project ? " selected" : ""}>${esc(p.project_code)} — ${esc(p.project_name)}</option>`).join("")}</select>
+          <span class="count" id="cnt"></span>
+        </div>
+        <div id="list"></div>
+      </section>`;
+    const draw = () => {
+      const t = f.text.trim().toLowerCase();
+      const okStatus = r => !f.status || (f.status === "open" ? EXT_OPEN.includes(r.status) : r.status === f.status);
+      const list = rows.filter(r => okStatus(r) && (!f.project || r.project_id === f.project)
+        && (!t || [r.company_name, r.project_name, r.project_code, String(r.number)].some(x => (x || "").toLowerCase().includes(t))));
+      $("#cnt").textContent = rows.length ? `${nf.format(list.length)} من ${nf.format(rows.length)}` : "";
+      $("#list").innerHTML = !rows.length ? empty("ext", "لا توجد مستخلصات مسجلة", ctx.canEdit ? "سجّل أول مستخلص من زر «تسجيل مستخلص». يجب أن تكون الشركة مرتبطة بالمشروع أولًا." : "ستظهر المستخلصات هنا بعد تسجيلها.")
+        : !list.length ? empty("search", "لا توجد نتائج", f.status === "open" ? "لا توجد مستخلصات تحت المتابعة. اختر «كل الحالات» لعرض الباقي." : "غيّر البحث أو الفلاتر المختارة.")
+        : extractsTable(list);
+    };
+    $("#q").oninput = e => { f.text = e.target.value; draw(); };
+    $("#st").onchange = e => { f.status = e.target.value; draw(); };
+    $("#pj").onchange = e => { f.project = e.target.value; draw(); };
+    draw();
+  }
+
+  async function extractDetail(id) {
+    const my = seq;
+    crumb.innerHTML = `<a href="#/">الرئيسية</a> / <a href="#/extracts">المستخلصات</a> / …`;
+    loading();
+    let e, events, names = {};
+    try {
+      [e, events] = await Promise.all([
+        q(sb.from("extracts_overview").select("*").eq("id", id).maybeSingle()),
+        q(sb.from("extract_events").select("*").eq("extract_id", id).order("created_at", { ascending: false })),
+      ]);
+      const ids = [...new Set(events.map(v => v.created_by).filter(Boolean))];
+      if (ids.length) (await q(sb.from("profiles").select("id,name").in("id", ids))).forEach(p => names[p.id] = p.name);
+    } catch (err) { return my === seq && failed(err); }
+    if (my !== seq) return;
+    if (!e) { view.innerHTML = `<div class="panel">${empty("ext", "المستخلص غير موجود", "ربما حُذف. ارجع لقائمة المستخلصات.")}</div>`; return; }
+    crumb.innerHTML = `<a href="#/">الرئيسية</a> / <a href="#/extracts">المستخلصات</a> / <b>${esc(e.company_name)} — مستخلص ${nf.format(e.number)}</b>`;
+    const next = ctx.canEdit ? EXT_NEXT[e.status] : [];
+    const stepBtns = next.map(s => `<button class="btn ${s === "rejected" || s === "needs_completion" ? "ghost" : "primary"}" data-action="status" data-to="${s}">${esc(EXT_ACTION[s])}</button>`).join("");
+    const time = v => new Date(v).toLocaleString("ar-EG", { day: "numeric", month: "short", year: "numeric", hour: "numeric", minute: "2-digit" });
+    view.innerHTML = head(extNo(e), `<a href="#/companies/${e.company_id}">${esc(e.company_name)}</a>، <a href="#/projects/${e.project_id}"><span class="mono">${esc(e.project_code)}</span> ${esc(e.project_name)}</a>`, editBtn("edit-extract", "تعديل البيانات", "edit", "btn ghost")) +
+      `<section class="info panel">
+        <div><span>الحالة</span>${extPill(e.status)}</div>
+        <div><span>تاريخ التقديم</span><b>${date(e.submitted_on)}</b></div>
+        <div><span>الفترة</span><b>${e.period_from || e.period_to ? `${date(e.period_from)} ← ${date(e.period_to)}` : "—"}</b></div>
+        <div><span>قيمة الأعمال</span><b class="num">${money(e.gross_amount)}</b></div>
+        <div><span>الاستقطاعات</span><b class="num">${money(e.deductions)}</b></div>
+        <div><span>الصافي المستحق</span><b class="num strong">${money(e.net_amount)}</b></div>
+        ${e.approved_on ? `<div><span>تاريخ الاعتماد</span><b>${date(e.approved_on)}</b></div>` : ""}
+        ${e.paid_on ? `<div><span>تاريخ الصرف</span><b>${date(e.paid_on)}</b></div>` : ""}
+        ${e.notes ? `<div class="wide"><span>ملاحظات</span><p>${esc(e.notes)}</p></div>` : ""}
+      </section>
+      ${stepBtns ? `<section class="panel steps"><div class="panel-head"><h2>الإجراء التالي</h2></div><div class="step-btns">${stepBtns}</div></section>` : ""}
+      <section class="panel">
+        <div class="panel-head"><h2>سجل المتابعة</h2></div>
+        <ol class="timeline">${events.map(v => `
+          <li><span class="dot ${EXT_STATUS[v.to_status]?.[1] || ""}"></span>
+            <div><b>${v.from_status ? `${esc(EXT_STATUS[v.from_status]?.[0])} ← ` : "تسجيل المستخلص: "}${esc(EXT_STATUS[v.to_status]?.[0] || v.to_status)}</b>
+            ${v.note ? `<p>${esc(v.note)}</p>` : ""}
+            <time>${time(v.created_at)}${names[v.created_by] ? `، ${esc(names[v.created_by])}` : ""}</time></div></li>`).join("")}
+        </ol>
+      </section>`;
+    Object.assign(actions, {
+      "edit-extract": () => extractForm(e),
+      status: el => statusForm(e, el.dataset.to),
+    });
   }
 
   function soon(title) {
@@ -360,13 +598,14 @@
   }
 
   /* ---------- التوجيه ---------- */
-  const SOON = { extracts: "المستخلصات", statuses: "المواقف التنفيذية", reports: "التقارير", settings: "الإعدادات" };
+  const SOON = { statuses: "المواقف التنفيذية", reports: "التقارير", settings: "الإعدادات" };
   function route() {
     const [, sec = "", id] = (location.hash || "#/").split("/");
     seq++;
     actions = {
       "add-project": () => projectForm(),
       "add-company": () => companyForm(),
+      "add-extract": () => extractForm(),
     };
     $$(".nav a").forEach(a => {
       const on = a.getAttribute("href") === "#/" + sec;
@@ -375,6 +614,7 @@
     });
     if (sec === "projects") id ? projectDetail(id) : projectsList();
     else if (sec === "companies") id ? companyDetail(id) : companiesList();
+    else if (sec === "extracts") id ? extractDetail(id) : extractsList();
     else if (SOON[sec]) soon(SOON[sec]);
     else dashboard();
     window.scrollTo(0, 0);
