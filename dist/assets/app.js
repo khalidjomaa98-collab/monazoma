@@ -24,6 +24,7 @@
     tool: '<path d="M14.7 6.3a4 4 0 0 0-5.4 5.4L3 18v3h3l6.3-6.3a4 4 0 0 0 5.4-5.4l-2.5 2.5-2.4-.6-.6-2.4z"/>',
     ext: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M8 13h8M8 17h5"/>',
     flow: '<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="18" r="2.5"/><path d="M8.5 6H14a4 4 0 0 1 4 4v5.5"/>',
+    stat: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   };
   const nf = new Intl.NumberFormat("ar-EG");
   const money = v => v == null || v === "" ? "—" : nf.format(Number(v)) + " ج.م";
@@ -48,6 +49,11 @@
   const EXT_KIND = { interim: "جاري", final: "ختامي" };
   const extPill = s => `<span class="pill ${EXT_STATUS[s]?.[1] || ""}">${esc(EXT_STATUS[s]?.[0] || s)}</span>`;
   const extNo = e => `مستخلص ${EXT_KIND[e.kind] || ""} رقم ${nf.format(e.number)}`;
+  // المواقف التنفيذية
+  const COND = { on_track: ["منتظم", "green"], delayed: ["متأخر", "amber"], stopped: ["متوقف", "red"] };
+  const condPill = c => c ? `<span class="pill ${COND[c]?.[1] || ""}">${esc(COND[c]?.[0] || c)}</span>` : `<span class="pill gray">لا يوجد موقف</span>`;
+  const STALE_DAYS = 7; // المشروع الجاري اللي ما اتسجلوش موقف من أكتر من كده بيظهر كتنبيه
+  const daysSince = d => d ? Math.floor((Date.now() - new Date(d + "T00:00:00")) / 864e5) : null;
   const opts = (map, sel) => Object.entries(map).map(([k, v]) => `<option value="${k}"${k === sel ? " selected" : ""}>${esc(Array.isArray(v) ? v[0] : v)}</option>`).join("");
 
   function toast(msg, bad) {
@@ -127,7 +133,7 @@
     { name: "name", label: "اسم المشروع", required: true, maxlength: 200, wide: true },
     { name: "location", label: "الموقع / الطريق", maxlength: 200, wide: true },
     { name: "status", label: "الحالة", type: "select" },
-    { name: "progress", label: "نسبة الإنجاز ٪", type: "number", min: 0, max: 100, step: "0.01", value: 0 },
+    { name: "progress", label: "نسبة الإنجاز ٪", type: "number", min: 0, max: 100, step: "0.01", value: 0, hint: "تتحدّث تلقائيًا من آخر موقف تنفيذي مسجّل." },
     { name: "contract_value", label: "قيمة التعاقد (ج.م)", type: "number", min: 0, step: "0.01" },
     { name: "start_date", label: "تاريخ البدء", type: "date" },
     { name: "planned_end_date", label: "تاريخ الانتهاء المخطط", type: "date" },
@@ -291,6 +297,85 @@
       </tr>`).join("")}</tbody>${total && rows.length > 1 ? `<tfoot><tr><td colspan="${2 + company + project}">${totalLabel}</td><td class="num">${money(sum)}</td><td></td></tr></tfoot>` : ""}</table>`;
   }
 
+  /* ---------- المواقف التنفيذية: النافذة والبطاقات ---------- */
+  // سبب احتياج المشروع للانتباه: stopped (متوقف) · delayed (متأخر) · stale (جارٍ بدون موقف حديث). المكتمل ولم يبدأ مستبعدين.
+  function attentionOf(r) {
+    if (r.project_status === "completed" || r.project_status === "planned") return null;
+    if (r.project_status === "suspended" || r.condition === "stopped") return "stopped";
+    if (r.condition === "delayed") return "delayed";
+    const d = daysSince(r.report_date);
+    if (d === null || d > STALE_DAYS) return "stale";
+    return null;
+  }
+  const attention = rows => new Map(rows.map(r => [r.project_id, attentionOf(r)]).filter(([, w]) => w));
+  const WHY = { stopped: ["متوقف", "red"], delayed: ["متأخر", "amber"], stale: ["بدون موقف حديث", "gray"] };
+
+  async function reportForm(s = null, preset = {}) {
+    let projects = [], links = [];
+    try {
+      [projects, links] = await Promise.all([
+        s ? [] : q(sb.from("projects").select("id,code,name,progress").order("code")),
+        q(sb.from("project_companies").select("project_id,company_id,companies(name)")),
+      ]);
+    } catch (err) { toast(errText(err), true); return; }
+    if (!s) {
+      if (preset.project_id) projects = projects.filter(p => p.id === preset.project_id);
+      if (!projects.length) { toast("لا توجد مشروعات مسجلة. أضف المشروع أولًا.", true); return; }
+    }
+    const fields = [
+      ...(s ? [] : [{ name: "project_id", label: "المشروع", type: "select", required: true, wide: true,
+        options: (projects.length > 1 ? `<option value="">اختر المشروع…</option>` : "") + projects.map(p => `<option value="${p.id}">${esc(p.code)} — ${esc(p.name)}</option>`).join("") }]),
+      { name: "company_id", label: "الشركة (اختياري)", type: "select", wide: true, options: "" },
+      { name: "report_date", label: "تاريخ الموقف", type: "date", required: true },
+      { name: "condition", label: "الوضع", type: "select", options: opts(COND, s?.condition || "on_track") },
+      { name: "progress", label: "نسبة الإنجاز الفعلية ٪", type: "number", required: true, min: 0, max: 100, step: "0.01", hint: "تُحدِّث نسبة إنجاز المشروع تلقائيًا." },
+      { name: "work_done", label: "الأعمال المنفذة", type: "textarea", wide: true, maxlength: 3000 },
+      { name: "next_steps", label: "الأعمال المخططة للفترة القادمة", type: "textarea", wide: true, maxlength: 3000 },
+      { name: "obstacles", label: "العوائق والمشكلات", type: "textarea", wide: true, maxlength: 3000, hint: "مطلوبة إذا كان الوضع متأخرًا أو متوقفًا." },
+      { name: "notes", label: "ملاحظات", type: "textarea", wide: true, maxlength: 2000 },
+    ];
+    const form = openForm({
+      title: s ? `تعديل موقف ${s.project_code} — ${date(s.report_date)}` : "تسجيل موقف تنفيذي", fields,
+      data: s || { report_date: today() },
+      submitLabel: s ? "حفظ التعديلات" : "تسجيل الموقف",
+      onSubmit: async v => {
+        v.company_id = v.company_id || null;
+        await q(s ? sb.from("project_statuses").update(v).eq("id", s.id) : sb.from("project_statuses").insert(v));
+        toast(s ? "تم حفظ التعديلات." : "تم تسجيل الموقف التنفيذي."); route();
+      },
+      danger: s && ctx.isAdmin ? { label: "حذف الموقف", confirm: `حذف موقف ${s.project_code} بتاريخ ${date(s.report_date)}؟`, run: async () => { await q(sb.from("project_statuses").delete().eq("id", s.id)); toast("تم حذف الموقف."); route(); } } : null,
+    });
+    const el = n => form.elements[n];
+    const fillCompanies = () => {
+      const pid = s ? s.project_id : el("project_id").value;
+      const list = links.filter(l => l.project_id === pid).sort((a, b) => a.companies.name.localeCompare(b.companies.name, "ar"));
+      el("company_id").innerHTML = `<option value="">المشروع ككل</option>` + list.map(l => `<option value="${l.company_id}">${esc(l.companies.name)}</option>`).join("");
+      if (s?.company_id) el("company_id").value = s.company_id;
+      // نسبة الإنجاز تبدأ من نسبة المشروع الحالية
+      if (!s && !el("progress").dataset.touched) { const p = projects.find(x => x.id === pid); el("progress").value = p ? Number(p.progress) : ""; }
+    };
+    el("progress").addEventListener("input", () => el("progress").dataset.touched = "1");
+    const cond = () => { el("obstacles").required = el("condition").value !== "on_track"; };
+    el("condition").addEventListener("change", cond); cond();
+    if (!s) el("project_id").onchange = fillCompanies;
+    fillCompanies();
+  }
+
+  // بطاقات المواقف (القائمة الكاملة، صفحة المشروع، لوحة التحكم)
+  function statusCards(rows, { project = true, compact = false } = {}) {
+    const block = (label, text, cls = "") => text ? `<div class="st-block ${cls}"><span>${label}</span><p>${esc(text)}</p></div>` : "";
+    return `<div class="st-list">${rows.map(r => `
+      <article class="st-card ${r.condition}">
+        <header>
+          <div class="st-title">${project ? `<a class="company" href="#/projects/${r.project_id}"><span class="mono">${esc(r.project_code)}</span> ${esc(r.project_name)}</a>` : ""}
+            <span class="sub">${date(r.report_date)}${r.company_name ? `، ${esc(r.company_name)}` : ""}</span></div>
+          <div class="st-meta">${condPill(r.condition)}${progress(r.progress)}${ctx.canEdit && !compact ? `<button class="icon-btn" data-action="edit-status" data-id="${r.id}" aria-label="تعديل الموقف">${svg(ICON.edit)}</button>` : ""}</div>
+        </header>
+        ${compact ? block("العوائق", r.obstacles, "obst") :
+          block("الأعمال المنفذة", r.work_done) + block("المخطط للفترة القادمة", r.next_steps) + block("العوائق", r.obstacles, "obst") + block("ملاحظات", r.notes)}
+      </article>`).join("")}</div>`;
+  }
+
   /* ---------- الشاشات ---------- */
   async function dashboard() {
     const my = seq;
@@ -298,23 +383,31 @@
     view.replaceChildren($("#tpl-dashboard").content.cloneNode(true));
     $$("[data-needs-edit]", view).forEach(el => el.hidden = !ctx.canEdit);
     try {
-      const [pc, cc, active, open, suspended, latest] = await Promise.all([
+      const [pc, cc, active, open, latest, perProject, reports] = await Promise.all([
         q(sb.from("projects").select("id", { count: "exact", head: true })),
         q(sb.from("companies").select("id", { count: "exact", head: true })),
         q(sb.from("projects").select("progress").eq("status", "active")),
         q(sb.from("extracts").select("status").in("status", EXT_OPEN)),
-        q(sb.from("projects").select("id", { count: "exact", head: true }).eq("status", "suspended")),
         q(sb.from("extracts_overview").select("*").order("submitted_on", { ascending: false }).order("created_at", { ascending: false }).limit(5)),
+        q(sb.from("project_latest_status").select("project_id,project_status,condition,report_date")),
+        q(sb.from("project_statuses_overview").select("*").order("report_date", { ascending: false }).order("created_at", { ascending: false }).limit(4)),
       ]);
       if (my !== seq) return;
       const needs = open.filter(r => r.status === "needs_completion").length;
       $('[data-stat="extracts"]', view).textContent = nf.format(open.length);
       $('[data-stat-note="extracts"]', view).textContent = open.length ? `${nf.format(open.length - needs)} بانتظار المراجعة، ${nf.format(needs)} مطلوب استكمال` : "لا توجد مستخلصات تحت المتابعة";
-      $('[data-stat="alerts"]', view).textContent = nf.format(needs + suspended);
-      $('[data-stat-note="alerts"]', view).textContent = needs + suspended
-        ? [needs && `${nf.format(needs)} مستخلص مطلوب استكماله`, suspended && `${nf.format(suspended)} مشروع متوقف`].filter(Boolean).join("، ")
+      // المشروعات اللي محتاجة انتباه (كل مشروع يتعد مرة واحدة)
+      const att = attention(perProject);
+      const nAtt = att.size, total = needs + nAtt;
+      const counts = { stopped: 0, delayed: 0, stale: 0 };
+      att.forEach(why => counts[why]++);
+      $('[data-stat="alerts"]', view).textContent = nf.format(total);
+      $('[data-stat-note="alerts"]', view).textContent = total
+        ? [needs && `${nf.format(needs)} مستخلص مطلوب استكماله`, counts.stopped && `${nf.format(counts.stopped)} مشروع متوقف`,
+           counts.delayed && `${nf.format(counts.delayed)} متأخر`, counts.stale && `${nf.format(counts.stale)} بدون موقف حديث`].filter(Boolean).join("، ")
         : "لا توجد تنبيهات";
       if (latest.length) $("[data-latest-extracts]", view).innerHTML = extractsTable(latest, { project: false, total: false });
+      if (reports.length) $("[data-latest-statuses]", view).innerHTML = statusCards(reports, { compact: true });
       $('[data-stat="projects"]', view).textContent = nf.format(pc);
       $('[data-stat-note="projects"]', view).textContent = pc ? `منها ${nf.format(active.length)} جارٍ التنفيذ` : "لم تُسجَّل مشروعات بعد";
       $('[data-stat="companies"]', view).textContent = nf.format(cc);
@@ -369,12 +462,13 @@
     const my = seq;
     crumb.innerHTML = `<a href="#/">الرئيسية</a> / <a href="#/projects">المشروعات</a> / …`;
     loading();
-    let p, links, exts;
+    let p, links, exts, reps;
     try {
-      [p, links, exts] = await Promise.all([
+      [p, links, exts, reps] = await Promise.all([
         q(sb.from("projects").select("*").eq("id", id).maybeSingle()),
         q(sb.from("project_companies").select("*, companies(id,name,kind)").eq("project_id", id)),
         q(sb.from("extracts_overview").select("*").eq("project_id", id).order("submitted_on", { ascending: false }).order("number", { ascending: false })),
+        q(sb.from("project_statuses_overview").select("*").eq("project_id", id).order("report_date", { ascending: false }).order("created_at", { ascending: false }).limit(4)),
       ]);
     } catch (e) { return my === seq && failed(e); }
     if (my !== seq) return;
@@ -394,6 +488,10 @@
         <div><span>الانتهاء المخطط</span><b>${date(p.planned_end_date)}</b></div>
         <div><span>عدد الشركات</span><b>${nf.format(links.length)}</b></div>
         ${p.notes ? `<div class="wide"><span>ملاحظات</span><p>${esc(p.notes)}</p></div>` : ""}
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>المواقف التنفيذية</h2><div class="head-actions">${reps.length > 3 ? `<a class="btn ghost sm" href="#/statuses" data-action="all-statuses">كل المواقف</a>` : ""}${editBtn("add-status-here", "تسجيل موقف", "plus", "btn ghost sm")}</div></div>
+        ${reps.length ? statusCards(reps.slice(0, 3), { project: false }) : empty("stat", "لا توجد مواقف تنفيذية", ctx.canEdit ? "سجّل موقف المشروع من زر «تسجيل موقف»." : "لم يُسجَّل موقف لهذا المشروع بعد.")}
       </section>
       <section class="panel">
         <div class="panel-head"><h2>الشركات المرتبطة بالمشروع</h2>${editBtn("link-company", "ربط شركة", "link", "btn ghost sm")}</div>
@@ -425,6 +523,9 @@
       },
       "edit-link": el => linkForm(id, links[+el.dataset.i]),
       "add-extract-here": () => extractForm(null, { project_id: id }),
+      "add-status-here": () => reportForm(null, { project_id: id }),
+      "edit-status": el => reportForm(reps.find(r => r.id === el.dataset.id)),
+      "all-statuses": () => { (statusesPage.f ||= { show: "", project: "", cond: "" }).project = id; location.hash = "#/statuses"; },
     });
   }
 
@@ -595,6 +696,67 @@
     });
   }
 
+  async function statusesPage() {
+    const my = seq;
+    crumb.innerHTML = `<a href="#/">الرئيسية</a> / المواقف التنفيذية`;
+    loading();
+    let latest, rows;
+    try {
+      [latest, rows] = await Promise.all([
+        q(sb.from("project_latest_status").select("*").order("project_code")),
+        q(sb.from("project_statuses_overview").select("*").order("report_date", { ascending: false }).order("created_at", { ascending: false }).limit(300)),
+      ]);
+    } catch (e) { return my === seq && failed(e); }
+    if (my !== seq) return;
+    const f = statusesPage.f ||= { show: "attention", project: "", cond: "" };
+    latest.forEach(r => r.why = attentionOf(r));
+    const order = { stopped: 0, delayed: 1, stale: 2 };
+    latest.sort((a, b) => (order[a.why] ?? 9) - (order[b.why] ?? 9) || a.project_code.localeCompare(b.project_code, "ar"));
+    const nAtt = latest.filter(r => r.why).length;
+    if (!nAtt && f.show === "attention") f.show = "";
+    view.innerHTML = head("المواقف التنفيذية", "آخر موقف لكل مشروع، وسجل المواقف المسجلة.", editBtn("add-status", "تسجيل موقف تنفيذي")) +
+      `<section class="panel">
+        <div class="panel-head"><h2>آخر موقف لكل مشروع</h2>
+          <select id="show" aria-label="عرض"><option value="">كل المشروعات (${nf.format(latest.length)})</option><option value="attention"${f.show ? " selected" : ""}>تحتاج انتباه (${nf.format(nAtt)})</option></select></div>
+        <div id="latest"></div>
+        <p class="note">«بدون موقف حديث»: مشروع جارٍ التنفيذ لم يُسجَّل له موقف منذ أكثر من ${nf.format(STALE_DAYS)} أيام.</p>
+      </section>
+      <section class="panel">
+        <div class="panel-head"><h2>سجل المواقف</h2></div>
+        <div class="filters">
+          <select id="pj" aria-label="المشروع"><option value="">كل المشروعات</option>${latest.slice().sort((a, b) => a.project_code.localeCompare(b.project_code, "ar")).map(p => `<option value="${p.project_id}"${p.project_id === f.project ? " selected" : ""}>${esc(p.project_code)} — ${esc(p.project_name)}</option>`).join("")}</select>
+          <select id="cd" aria-label="الوضع"><option value="">كل الأوضاع</option>${opts(COND, f.cond)}</select>
+          <span class="count" id="cnt"></span>
+        </div>
+        <div id="log"></div>
+      </section>`;
+    const drawLatest = () => {
+      const list = latest.filter(r => !f.show || r.why);
+      $("#latest").innerHTML = !latest.length ? empty("proj", "لا توجد مشروعات", "أضف المشروعات أولًا من صفحة المشروعات.")
+        : !list.length ? empty("stat", "لا توجد مشروعات تحتاج انتباه", "كل المشروعات الجارية لها مواقف حديثة ومنتظمة.")
+        : `<table class="table cards"><thead><tr><th>المشروع</th><th>آخر موقف</th><th>الوضع</th><th>الإنجاز</th><th>تنبيه</th></tr></thead><tbody>${list.map(r => {
+          const d = daysSince(r.report_date);
+          return `<tr class="row-link" data-href="#/projects/${r.project_id}" tabindex="0">
+            <td data-label="المشروع" class="title"><span class="company"><span class="mono">${esc(r.project_code)}</span> ${esc(r.project_name)}</span><span class="sub">${pill(r.project_status)}</span></td>
+            <td data-label="آخر موقف">${r.report_date ? `${date(r.report_date)}<span class="sub">${d === 0 ? "اليوم" : d === 1 ? "أمس" : `منذ ${nf.format(d)} يوم`}</span>` : "—"}</td>
+            <td data-label="الوضع">${condPill(r.condition)}</td>
+            <td data-label="الإنجاز">${progress(r.project_progress)}</td>
+            <td data-label="تنبيه">${r.why ? `<span class="pill ${WHY[r.why][1]}">${WHY[r.why][0]}</span>` : "—"}</td>
+          </tr>`; }).join("")}</tbody></table>`;
+    };
+    const drawLog = () => {
+      const list = rows.filter(r => (!f.project || r.project_id === f.project) && (!f.cond || r.condition === f.cond));
+      $("#cnt").textContent = rows.length ? `${nf.format(list.length)} موقف` : "";
+      $("#log").innerHTML = !rows.length ? empty("stat", "لا توجد مواقف مسجلة", ctx.canEdit ? "سجّل أول موقف من زر «تسجيل موقف تنفيذي»." : "ستظهر المواقف هنا بعد تسجيلها.")
+        : !list.length ? empty("search", "لا توجد نتائج", "غيّر المشروع أو الوضع المختار.") : statusCards(list);
+    };
+    $("#show").onchange = e => { f.show = e.target.value; drawLatest(); };
+    $("#pj").onchange = e => { f.project = e.target.value; drawLog(); };
+    $("#cd").onchange = e => { f.cond = e.target.value; drawLog(); };
+    drawLatest(); drawLog();
+    Object.assign(actions, { "edit-status": el => reportForm(rows.find(r => r.id === el.dataset.id)) });
+  }
+
   /* ---------- الإعدادات: حسابي + إدارة المستخدمين ---------- */
   const ROLE = { admin: ["مدير المنظومة", "blue"], editor: ["إدخال وتعديل", "amber"], viewer: ["اطلاع فقط", "gray"] };
   const ROLE_HINT = "المدير: كل شيء + إدارة المستخدمين والحذف. إدخال وتعديل: الإضافة والتعديل وتغيير حالات المستخلصات. اطلاع فقط: مشاهدة بدون تعديل.";
@@ -740,7 +902,7 @@
   }
 
   /* ---------- التوجيه ---------- */
-  const SOON = { statuses: "المواقف التنفيذية", reports: "التقارير" };
+  const SOON = { reports: "التقارير" };
   function route() {
     const [, sec = "", id] = (location.hash || "#/").split("/");
     seq++;
@@ -748,6 +910,7 @@
       "add-project": () => projectForm(),
       "add-company": () => companyForm(),
       "add-extract": () => extractForm(),
+      "add-status": () => reportForm(),
     };
     $$(".nav a").forEach(a => {
       const on = a.getAttribute("href") === "#/" + sec;
@@ -758,6 +921,7 @@
     else if (sec === "companies") id ? companyDetail(id) : companiesList();
     else if (sec === "extracts") id ? extractDetail(id) : extractsList();
     else if (sec === "settings") settings();
+    else if (sec === "statuses") statusesPage();
     else if (SOON[sec]) soon(SOON[sec]);
     else dashboard();
     window.scrollTo(0, 0);
