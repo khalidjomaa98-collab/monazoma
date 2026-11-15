@@ -234,3 +234,9 @@ html.dense .stats,html.dense .grid{gap:12px}
   .table.cards.fin tfoot td[data-label]::before{content:attr(data-label);color:var(--muted);font-size:9px;font-weight:700}
 }
 #view.stale{pointer-events:none}
+
+/* القائمة الجانبية ثابتة على الكمبيوتر، والمحتوى بس اللي بيتحرك مع السكرول */
+@media(min-width:701px){
+  .app{align-items:start}
+  .sidebar{position:sticky;top:0;height:100vh;height:100dvh;overflow-y:auto;scrollbar-width:thin}
+}
