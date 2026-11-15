@@ -1,23 +1,20 @@
 -- منظومة المتابعة — البيانات التجريبية للأقسام الجديدة
--- الدوال القديمة اتنقلت لـ private، والدوال العامة بتناديها وبعدين تضيف/تمسح بيانات الأقسام الجديدة.
+-- دوال إضافية فقط (من غير تعديل الدوال الموجودة):
+--   load_demo_sections()  : بعد load_demo_data() — تضيف الموازنة والحصر والمستندات والالتزامات والمعدات وقطع الغيار
+--   clear_demo_sections() : قبل clear_demo_data() — تمسح الالتزامات والمعدات وقطع الغيار التجريبية
+-- (الموازنة والحصر والمستندات بتتمسح تلقائيًا مع المشروعات التجريبية)
 
-alter function public.load_demo_data() set schema private;
-alter function public.clear_demo_data() set schema private;
-revoke all on function private.load_demo_data() from public, anon, authenticated;
-revoke all on function private.clear_demo_data() from public, anon, authenticated;
-
-create or replace function public.clear_demo_data()
+create or replace function public.clear_demo_sections()
 returns void language plpgsql security definer set search_path = ''
 as $$
 begin
   if not private.is_admin() then raise exception 'not allowed' using errcode = '42501'; end if;
   delete from public.commitments where demo;
-  delete from public.spare_parts where demo;      -- الحركات بتتمسح معاها
-  delete from public.equipment where demo;        -- الصيانة بتتمسح معاها
-  perform private.clear_demo_data();              -- المشروعات (والمستندات والموازنة والحصر معاها) والشركات
+  delete from public.spare_parts where demo;
+  delete from public.equipment where demo;
 end; $$;
 
-create or replace function public.load_demo_data()
+create or replace function public.load_demo_sections()
 returns void language plpgsql security definer set search_path = ''
 as $$
 declare
@@ -37,22 +34,19 @@ declare
   pm numeric[] := array[15, 10, 10, 5, 200, 150, 4, 4, 6, 6];
 begin
   if not private.is_admin() then raise exception 'not allowed' using errcode = '42501'; end if;
-  if exists (select 1 from public.projects where demo) then return; end if;
-  perform private.load_demo_data();
+  if exists (select 1 from public.equipment where demo) then return; end if;   -- محمّلة بالفعل
 
   for pr in select p.*, row_number() over (order by p.code) as n from public.projects p where p.demo order by p.code loop
     prj := prj || pr.id;
     select company_id into mc from public.project_companies where project_id = pr.id and role = 'contractor' limit 1;
     select company_id into sc from public.project_companies where project_id = pr.id and role = 'subcontractor' limit 1;
 
-    -- الموازنة
     for i in 1..6 loop
       insert into public.budget_items (project_id, category, description, amount, spent)
       values (pr.id, cats[i], 'بند موازنة تجريبي', round(pr.contract_value * catp[i], -3),
               round(pr.contract_value * catp[i] * least(1.08, pr.progress / 100 * (0.9 + ((i * 7 + pr.n) % 5) * 0.05)), -3));
     end loop;
 
-    -- بيان الأعمال (الحصر) للمقاول الرئيسي
     for i in 1..7 loop
       insert into public.work_items (project_id, company_id, item_no, description, unit, contract_qty, executed_qty, unit_price)
       values (pr.id, mc, lpad(i::text, 2, '0'), wdesc[i], wunit[i],
@@ -61,7 +55,6 @@ begin
               wprice[i]);
     end loop;
 
-    -- المستندات (بيانات بدون ملفات مرفقة)
     insert into public.project_documents (project_id, category, ref_no, doc_date, title, company_id, notes) values
       (pr.id, 'boq', 'مق-' || pr.n || '/1', pr.start_date - 30, 'المقايسة التعاقدية للأعمال الرئيسية', mc, 'بيانات تجريبية — بدون ملف مرفق'),
       (pr.id, 'boq', 'مق-' || pr.n || '/2', pr.start_date - 20, 'مقايسة الأعمال الصناعية', sc, 'بيانات تجريبية — بدون ملف مرفق'),
@@ -80,7 +73,6 @@ begin
     end if;
   end loop;
 
-  -- الالتزامات والمؤتمرات
   insert into public.commitments (kind, title, project_id, due_date, due_time, location, responsible, status, demo) values
     ('conference','المؤتمر الشهري لمتابعة مشروعات الطرق', null, current_date + 3, '10:00', 'قاعة الاجتماعات الرئيسية', 'قائد الفرع', 'open', true),
     ('meeting','اجتماع تنسيق مع المقاول الرئيسي', prj[1], current_date + 1, '12:00', 'موقع المشروع', 'مهندس المشروع', 'open', true),
@@ -93,7 +85,6 @@ begin
     ('meeting','اجتماع التنسيق الشهري', prj[1], current_date - 9, '10:00', 'موقع المشروع', 'مهندس المشروع', 'done', true),
     ('commitment','تحويل مسار المرافق المعترضة', prj[5], current_date - 20, null, '', 'جهة المرافق', 'cancelled', true);
 
-  -- الشؤون الفنية: المعدات (موزعة على المشروعات الجارية)
   for i in 1..array_length(eqn, 1) loop
     insert into public.equipment (code, name, category, plate_no, project_id, status, demo, notes)
     values ('مع-' || lpad(i::text, 3, '0'), eqn[i], eqc[i], 'ط ' || (1200 + i * 37),
@@ -107,7 +98,6 @@ begin
            case when i % 4 = 0 then current_date - 3 else current_date + 20 + i end);
   end loop;
 
-  -- قطع الغيار وحركة المخزن
   for i in 1..array_length(pn, 1) loop
     insert into public.spare_parts (code, name, unit, qty, min_qty, warehouse, demo)
     values ('قغ-' || lpad(i::text, 3, '0'), pn[i], pu[i], pq[i], pm[i], case when i <= 6 then 'المخزن الرئيسي' else 'مخزن الموقع' end, true)
@@ -118,7 +108,5 @@ begin
   end loop;
 end; $$;
 
-revoke all on function public.load_demo_data() from public, anon;
-revoke all on function public.clear_demo_data() from public, anon;
-grant execute on function public.load_demo_data() to authenticated;
-grant execute on function public.clear_demo_data() to authenticated;
+grant execute on function public.load_demo_sections() to authenticated;
+grant execute on function public.clear_demo_sections() to authenticated;
