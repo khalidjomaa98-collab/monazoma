@@ -75,6 +75,7 @@
   const opts = (map, sel) => Object.entries(map).map(([k, v]) => `<option value="${k}"${k === sel ? " selected" : ""}>${esc(Array.isArray(v) ? v[0] : v)}</option>`).join("");
 
   function toast(msg, bad) {
+    if (!bad) snaps.clear(); // رسالة نجاح = حصل تعديل في البيانات
     toastEl.textContent = msg; toastEl.className = "show" + (bad ? " bad" : "");
     clearTimeout(toast.t); toast.t = setTimeout(() => toastEl.className = "", 3200);
   }
@@ -103,7 +104,15 @@
     }
   }
 
-  const loading = () => { view.innerHTML = `<div class="loading"><span></span>جارٍ التحميل…</div>`; };
+  // ذاكرة الصفحات: آخر شكل لكل صفحة (حسب الرابط) بيظهر فورًا لما ترجعلها، والبيانات بتتحدّث في الخلفية.
+  // أي حفظ/تعديل/حذف بيمسح الذاكرة عشان ما يظهرش رقم قديم.
+  const snaps = new Map();
+  const forget = () => snaps.clear();
+  const loading = () => {
+    const snap = snaps.get(location.hash || "#/");
+    if (snap) { view.innerHTML = snap; view.classList.add("stale"); }
+    else view.innerHTML = `<div class="loading"><span></span>جارٍ التحميل…</div>`;
+  };
   const failed = e => { view.innerHTML = `<div class="panel"><div class="empty"><b>تعذّر تحميل البيانات</b><p>${esc(errText(e))}</p><button class="btn ghost" onclick="location.reload()">إعادة المحاولة</button></div></div>`; };
   const empty = (icon, title, text) => `<div class="empty"><span class="empty-ico">${svg(ICON[icon])}</span><b>${esc(title)}</b><p>${esc(text)}</p></div>`;
   const head = (title, sub, actions = "") => `<section class="head"><div><h1>${esc(title)}</h1>${sub ? `<p class="welcome">${sub}</p>` : ""}</div><div class="head-actions">${actions}</div></section>`;
@@ -148,7 +157,7 @@
         out[f.name] = v;
       }
       busy(true); submit.textContent = fields.some(f => f.type === "file" && out[f.name]) ? "جارٍ رفع الملف…" : "جارٍ الحفظ…";
-      try { await onSubmit(out); dlg.close(); }
+      try { await onSubmit(out); snaps.clear(); dlg.close(); }
       catch (e) { err.textContent = errText(e); }
       finally { busy(false); submit.textContent = submitLabel; }
     };
@@ -486,8 +495,10 @@
   async function dashboard() {
     const my = seq;
     crumb.innerHTML = `<b>الرئيسية</b> / لوحة التحكم`;
-    view.replaceChildren($("#tpl-dashboard").content.cloneNode(true));
-    $$("[data-needs-edit]", view).forEach(el => el.hidden = !ctx.canEdit);
+    // لو اللوحة اتفتحت قبل كده بتظهر نسختها الأخيرة لحد ما الأرقام الجديدة توصل (بدل ما تظهر أصفار)
+    let mounted = false;
+    const mount = () => { mounted = true; view.replaceChildren($("#tpl-dashboard").content.cloneNode(true)); $$("[data-needs-edit]", view).forEach(el => el.hidden = !ctx.canEdit); };
+    if (snaps.has(location.hash || "#/")) loading(); else mount();
     try {
       const [pc, cc, active, openN, needs, latest, perProject, reports, lateC, brokenEq, parts] = await Promise.all([
         q(sb.from("projects").select("id", { count: "exact", head: true })),
@@ -504,6 +515,7 @@
       ]);
       const lowParts = parts.filter(x => Number(x.qty) < Number(x.min_qty)).length;
       if (my !== seq) return;
+      if (!mounted) mount();
       demoBanner();
       $('[data-stat="extracts"]', view).textContent = nf.format(openN);
       $('[data-stat-note="extracts"]', view).textContent = openN ? `${nf.format(openN - needs)} بانتظار المراجعة، ${nf.format(needs)} مطلوب استكمال` : "لا توجد مستخلصات تحت المتابعة";
@@ -1860,16 +1872,22 @@
       a.classList.toggle("active", on); on ? a.setAttribute("aria-current", "page") : a.removeAttribute("aria-current");
       if (on && matchMedia("(max-width:700px)").matches) a.scrollIntoView({ block: "nearest", inline: "center" });
     });
-    if (sec === "projects") id ? projectDetail(id, sub) : projectsList();
-    else if (sec === "companies") id ? companyDetail(id) : companiesList();
-    else if (sec === "extracts") id ? extractDetail(id) : extractsList();
-    else if (sec === "settings") settings();
-    else if (sec === "statuses") statusesPage();
-    else if (sec === "reports") reportsPage();
-    else if (sec === "commitments") commitmentsPage();
-    else if (sec === "technical") technicalPage(id, sub);
-    else if (SOON[sec]) soon(SOON[sec]);
-    else dashboard();
+    const key = location.hash || "#/", my = seq;
+    const done = Promise.resolve(
+      sec === "projects" ? (id ? projectDetail(id, sub) : projectsList())
+      : sec === "companies" ? (id ? companyDetail(id) : companiesList())
+      : sec === "extracts" ? (id ? extractDetail(id) : extractsList())
+      : sec === "settings" ? settings()
+      : sec === "statuses" ? statusesPage()
+      : sec === "reports" ? reportsPage()
+      : sec === "commitments" ? commitmentsPage()
+      : sec === "technical" ? technicalPage(id, sub)
+      : SOON[sec] ? soon(SOON[sec]) : dashboard());
+    done.finally(() => {
+      if (my !== seq) return;
+      view.classList.remove("stale");
+      if (!view.querySelector(".loading")) snaps.set(key, view.innerHTML);
+    });
     if (!(sec === "projects" && id && route.lastKey === `${sec}/${id}`)) window.scrollTo(0, 0);
     route.lastKey = `${sec}/${id}`;
   }

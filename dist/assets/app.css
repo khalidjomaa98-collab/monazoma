@@ -233,3 +233,4 @@ html.dense .stats,html.dense .grid{gap:12px}
   .table.cards.fin tfoot td.title{grid-column:1/-1;font-weight:800}
   .table.cards.fin tfoot td[data-label]::before{content:attr(data-label);color:var(--muted);font-size:9px;font-weight:700}
 }
+#view.stale{pointer-events:none}
